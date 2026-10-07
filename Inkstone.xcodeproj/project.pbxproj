@@ -1,0 +1,250 @@
+// !$*UTF8*$!
+{
+	"archiveVersion" = 1;
+	"classes" = {
+	};
+	"objectVersion" = 56;
+	"objects" = {
+		"715AE25114094100E9EA67EF" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "EditorView.swift";
+			"sourceTree" = "<group>";
+		};
+		"0E7F3DBA4BED6E571797EDEA" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "715AE25114094100E9EA67EF";
+		};
+		"ECF20EFAFA82E58D1AAA310D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "InkstoneApp.swift";
+			"sourceTree" = "<group>";
+		};
+		"C785A19FEB57802ACEE554D5" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "ECF20EFAFA82E58D1AAA310D";
+		};
+		"F697CD6B048455BA0C081F0D" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "LibraryStore.swift";
+			"sourceTree" = "<group>";
+		};
+		"3D93C8C7E2731990F4917D43" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "F697CD6B048455BA0C081F0D";
+		};
+		"BD70A310F2F30DD5291DD366" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "LibraryView.swift";
+			"sourceTree" = "<group>";
+		};
+		"375E7102E5615BC742ED6F79" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "BD70A310F2F30DD5291DD366";
+		};
+		"7A899A371266B0F2845F9DF5" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "MarkdownReader.swift";
+			"sourceTree" = "<group>";
+		};
+		"69F675F12C5D327AA954225F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "7A899A371266B0F2845F9DF5";
+		};
+		"EEDE96C56CBAC202420A47BC" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "sourcecode.swift";
+			"path" = "SettingsView.swift";
+			"sourceTree" = "<group>";
+		};
+		"289C8D3C22097DA2A314830F" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "EEDE96C56CBAC202420A47BC";
+		};
+		"3685E330EC5277A9DD5661C6" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "folder.assetcatalog";
+			"path" = "Assets.xcassets";
+			"sourceTree" = "<group>";
+		};
+		"59BD0A3FF43B32849B319E64" = {
+			"isa" = "PBXFileReference";
+			"lastKnownFileType" = "text.plist.xml";
+			"path" = "Info.plist";
+			"sourceTree" = "<group>";
+		};
+		"69F8D45498D7E20DA99BB780" = {
+			"isa" = "PBXGroup";
+			"children" = ("715AE25114094100E9EA67EF", "ECF20EFAFA82E58D1AAA310D", "F697CD6B048455BA0C081F0D", "BD70A310F2F30DD5291DD366", "7A899A371266B0F2845F9DF5", "EEDE96C56CBAC202420A47BC", "3685E330EC5277A9DD5661C6", "59BD0A3FF43B32849B319E64");
+			"path" = "App";
+			"sourceTree" = "<group>";
+		};
+		"8BCD5BC4CDFDF0918087C782" = {
+			"isa" = "PBXFileReference";
+			"explicitFileType" = "wrapper.application";
+			"path" = "Inkstone.app";
+			"sourceTree" = "BUILT_PRODUCTS_DIR";
+		};
+		"FBDC4F23F93125BBEEAE800C" = {
+			"isa" = "PBXGroup";
+			"children" = ("8BCD5BC4CDFDF0918087C782");
+			"name" = "Products";
+			"sourceTree" = "<group>";
+		};
+		"B28B7AF69320201D1CF206EB" = {
+			"isa" = "PBXGroup";
+			"children" = ("69F8D45498D7E20DA99BB780", "FBDC4F23F93125BBEEAE800C");
+			"sourceTree" = "<group>";
+		};
+		"C27E4B6BEEEBEE564F55E421" = {
+			"isa" = "XCLocalSwiftPackageReference";
+			"relativePath" = ".";
+		};
+		"D069509556BFAFFC25586CC3" = {
+			"isa" = "XCSwiftPackageProductDependency";
+			"package" = "C27E4B6BEEEBEE564F55E421";
+			"productName" = "InkstoneCore";
+		};
+		"ABFE60E429B642B2B45ADF15" = {
+			"isa" = "PBXBuildFile";
+			"productRef" = "D069509556BFAFFC25586CC3";
+		};
+		"7561BFB015D8F536760CB671" = {
+			"isa" = "PBXFrameworksBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("ABFE60E429B642B2B45ADF15");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"BCE16DD0260827ECF338C787" = {
+			"isa" = "PBXSourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("0E7F3DBA4BED6E571797EDEA", "C785A19FEB57802ACEE554D5", "3D93C8C7E2731990F4917D43", "375E7102E5615BC742ED6F79", "69F675F12C5D327AA954225F", "289C8D3C22097DA2A314830F");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"AA400DFD4219F700A8EA7668" = {
+			"isa" = "PBXBuildFile";
+			"fileRef" = "3685E330EC5277A9DD5661C6";
+		};
+		"0189424A5A60FED329FA868E" = {
+			"isa" = "PBXResourcesBuildPhase";
+			"buildActionMask" = 2147483647;
+			"files" = ("AA400DFD4219F700A8EA7668");
+			"runOnlyForDeploymentPostprocessing" = 0;
+		};
+		"E9B2E96ABC5F6856F2BE79CF" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.inkstone.mobile";
+				"PRODUCT_NAME" = "Inkstone";
+				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+				"SWIFT_VERSION" = "5.0";
+				"TARGETED_DEVICE_FAMILY" = "1,2";
+				"INFOPLIST_FILE" = "App/Info.plist";
+				"SDKROOT" = "iphoneos";
+				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"MARKETING_VERSION" = "0.1.0";
+				"CURRENT_PROJECT_VERSION" = "1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME" = "AccentColor";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"SUPPORTS_MACCATALYST" = "NO";
+				"ENABLE_PREVIEWS" = "YES";
+				"SWIFT_EMIT_LOC_STRINGS" = "YES";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/Frameworks");
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+			};
+		};
+		"5A8C91857F674E16E2724F47" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"PRODUCT_BUNDLE_IDENTIFIER" = "com.inkstone.mobile";
+				"PRODUCT_NAME" = "Inkstone";
+				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
+				"SWIFT_VERSION" = "5.0";
+				"TARGETED_DEVICE_FAMILY" = "1,2";
+				"INFOPLIST_FILE" = "App/Info.plist";
+				"SDKROOT" = "iphoneos";
+				"SUPPORTED_PLATFORMS" = "iphoneos iphonesimulator";
+				"CODE_SIGN_STYLE" = "Automatic";
+				"MARKETING_VERSION" = "0.1.0";
+				"CURRENT_PROJECT_VERSION" = "1";
+				"ASSETCATALOG_COMPILER_APPICON_NAME" = "AppIcon";
+				"ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME" = "AccentColor";
+				"GENERATE_INFOPLIST_FILE" = "NO";
+				"SUPPORTS_MACCATALYST" = "NO";
+				"ENABLE_PREVIEWS" = "YES";
+				"SWIFT_EMIT_LOC_STRINGS" = "YES";
+				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/Frameworks");
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+			};
+		};
+		"F37922C48DA5978D02C9E50E" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("E9B2E96ABC5F6856F2BE79CF", "5A8C91857F674E16E2724F47");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"C13732C8E715C9BEE4FA51C9" = {
+			"isa" = "PBXNativeTarget";
+			"buildConfigurationList" = "F37922C48DA5978D02C9E50E";
+			"buildPhases" = ("BCE16DD0260827ECF338C787", "7561BFB015D8F536760CB671", "0189424A5A60FED329FA868E");
+			"buildRules" = ();
+			"dependencies" = ();
+			"name" = "Inkstone";
+			"packageProductDependencies" = ("D069509556BFAFFC25586CC3");
+			"productName" = "Inkstone";
+			"productReference" = "8BCD5BC4CDFDF0918087C782";
+			"productType" = "com.apple.product-type.application";
+		};
+		"89E1FD6268CC0F221A2BE178" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Debug";
+			"buildSettings" = {
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
+			};
+		};
+		"E6DE6C99132752C914FEF632" = {
+			"isa" = "XCBuildConfiguration";
+			"name" = "Release";
+			"buildSettings" = {
+				"CLANG_ENABLE_MODULES" = "YES";
+				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+			};
+		};
+		"862894B703A6DEDF96A9DD6C" = {
+			"isa" = "XCConfigurationList";
+			"buildConfigurations" = ("89E1FD6268CC0F221A2BE178", "E6DE6C99132752C914FEF632");
+			"defaultConfigurationIsVisible" = 0;
+			"defaultConfigurationName" = "Release";
+		};
+		"98F54143AB4E86B28C3AFEE0" = {
+			"isa" = "PBXProject";
+			"attributes" = {
+				"BuildIndependentTargetsInParallel" = "YES";
+				"LastUpgradeCheck" = "1600";
+			};
+			"buildConfigurationList" = "862894B703A6DEDF96A9DD6C";
+			"compatibilityVersion" = "Xcode 14.0";
+			"developmentRegion" = "zh-Hans";
+			"hasScannedForEncodings" = 0;
+			"knownRegions" = ("zh-Hans", "en", "Base");
+			"mainGroup" = "B28B7AF69320201D1CF206EB";
+			"packageReferences" = ("C27E4B6BEEEBEE564F55E421");
+			"productRefGroup" = "FBDC4F23F93125BBEEAE800C";
+			"projectDirPath" = "";
+			"projectRoot" = "";
+			"targets" = ("C13732C8E715C9BEE4FA51C9");
+		};
+	};
+	"rootObject" = "98F54143AB4E86B28C3AFEE0";
+}

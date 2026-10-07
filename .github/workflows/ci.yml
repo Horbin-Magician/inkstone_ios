@@ -1,0 +1,15 @@
+name: iOS checks
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Core tests and shared SwiftUI compile
+        run: swift test
+      - name: Validate project generation
+        run: |
+          python3 scripts/generate_project.py
+          git diff --exit-code -- Inkstone.xcodeproj
+      - name: Build iOS simulator application
+        run: xcodebuild -project Inkstone.xcodeproj -scheme Inkstone -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build

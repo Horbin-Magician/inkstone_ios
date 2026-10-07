@@ -1,0 +1,9 @@
+Inkstone Mobile
+
+The app icon is derived from the Inkstone desktop project:
+crates/inkstone-desktop/assets/inkstone-icon.png
+Source project: /Users/horbin/Project/inkstone
+Its Apache 2.0 license is reproduced in LICENSE.
+The mobile implementation is written in Swift and references the desktop project's
+Markdown file conventions, Chinese product name, and teal accent palette.
+No GPUI or vendored desktop library code is included in this application.
