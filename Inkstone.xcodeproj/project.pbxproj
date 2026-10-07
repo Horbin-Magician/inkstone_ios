@@ -158,6 +158,7 @@
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
 				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/Frameworks");
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
@@ -184,6 +185,7 @@
 				"SWIFT_EMIT_LOC_STRINGS" = "YES";
 				"LD_RUNPATH_SEARCH_PATHS" = ("$(inherited)", "@executable_path/Frameworks");
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
 		"F37922C48DA5978D02C9E50E" = {
@@ -210,6 +212,7 @@
 			"buildSettings" = {
 				"CLANG_ENABLE_MODULES" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-Onone";
+				"ONLY_ACTIVE_ARCH" = "YES";
 				"SWIFT_ACTIVE_COMPILATION_CONDITIONS" = "DEBUG";
 			};
 		};
@@ -219,6 +222,7 @@
 			"buildSettings" = {
 				"CLANG_ENABLE_MODULES" = "YES";
 				"SWIFT_OPTIMIZATION_LEVEL" = "-O";
+				"ONLY_ACTIVE_ARCH" = "NO";
 			};
 		};
 		"862894B703A6DEDF96A9DD6C" = {

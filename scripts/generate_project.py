@@ -16,7 +16,8 @@ def configs(prefix, settings):
     ids = []
     for name in ('Debug', 'Release'):
         options = dict(settings)
-        options.update(SWIFT_OPTIMIZATION_LEVEL='-Onone' if name == 'Debug' else '-O')
+        options.update(SWIFT_OPTIMIZATION_LEVEL='-Onone' if name == 'Debug' else '-O',
+                       ONLY_ACTIVE_ARCH='YES' if name == 'Debug' else 'NO')
         if name == 'Debug': options['SWIFT_ACTIVE_COMPILATION_CONDITIONS'] = 'DEBUG'
         ids.append(obj(prefix+name, 'XCBuildConfiguration', name=name, buildSettings=options))
     return obj(prefix+'configs', 'XCConfigurationList', buildConfigurations=ids, defaultConfigurationIsVisible=0, defaultConfigurationName='Release')

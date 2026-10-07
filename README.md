@@ -8,6 +8,16 @@
 2. 选择 `Inkstone` scheme 与 iPhone / iPad 模拟器后运行。
 3. 真机运行时，在 Signing & Capabilities 中选择自己的开发团队，并按需修改 Bundle Identifier。
 
+也可以一条命令构建、安装并启动模拟器：
+
+```sh
+./scripts/run-simulator.sh 'iPhone 17e'
+# iPad：
+./scripts/run-simulator.sh 'iPad mini (A17 Pro)'
+```
+
+不传设备名称时优先选择已启动的 iPhone，存在多个匹配时需指定名称或 UDID。脚本会自动使用 `/Applications/Xcode.app`，无需全局切换 `xcode-select`；显式设置的 `DEVELOPER_DIR` 优先。兼容旧版 Simulator 与 Xcode 27 的 Device Hub。
+
 ```sh
 open Inkstone.xcodeproj
 # 完整 Xcode 环境：
@@ -62,7 +72,9 @@ xcodebuild -project Inkstone.xcodeproj -scheme Inkstone \
 
 Swift Package 还会编译 `InkstonePreview`，用于在 macOS SDK 下检查共享 SwiftUI 代码。它不是 iOS 模拟器。只有 Command Line Tools 的机器可运行核心测试；脚本包含当前机器缺少宏插件时的 SDK 选择兼容处理。
 
-2026-10-07：15 项核心回归、共享 SwiftUI 编译与工程配置检查通过；隔离库中完成 macOS 共享页面的编辑/保存/任务勾选/冲突提示验证。本机仅安装 Command Line Tools，**iOS 构建、模拟器、真机、中文输入法和文件提供商验收尚未完成**。CI 已配置核心测试与 iOS 模拟器构建，尚未有远端执行结果。完整验收清单见 `docs/TESTING.md`。
+2026-10-07 Xcode 安装后补验：Xcode 27.0 / iOS 27.0 模拟器构建通过，15 项核心回归通过；iPhone 17e 已验证新建、Unicode 正文保存、阅读任务勾选、历史恢复、草稿持久化与重启后恢复；iPad mini 已验证启动、横竖屏首页及横屏阅读。修复了指定设备构建时 App 与 Swift 包架构不一致的问题。
+
+**真机签名安装、中文输入法组合输入、iCloud/第三方文件提供商同步仍待验收**。CI 已配置，尚未有远端执行结果。详细验证范围和剩余清单见 `docs/TESTING.md`。
 
 ## 目录
 
