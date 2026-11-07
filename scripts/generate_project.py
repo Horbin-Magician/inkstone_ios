@@ -29,6 +29,8 @@ for file in sorted((root/'App').glob('*.swift')):
     sources.append(obj('build'+file.name, 'PBXBuildFile', fileRef=ref))
 assets = obj('assets', 'PBXFileReference', lastKnownFileType='folder.assetcatalog', path='Assets.xcassets', sourceTree='<group>')
 children += [assets, obj('info', 'PBXFileReference', lastKnownFileType='text.plist.xml', path='Info.plist', sourceTree='<group>')]
+privacy = obj('privacyManifest', 'PBXFileReference', lastKnownFileType='text.xml', path='PrivacyInfo.xcprivacy', sourceTree='<group>')
+children.append(privacy)
 appGroup = obj('appGroup', 'PBXGroup', children=children, path='App', sourceTree='<group>')
 product = obj('appProduct', 'PBXFileReference', explicitFileType='wrapper.application', path='Inkstone.app', sourceTree='BUILT_PRODUCTS_DIR')
 products = obj('products', 'PBXGroup', children=[product], name='Products', sourceTree='<group>')
@@ -37,12 +39,12 @@ package = obj('localPackage', 'XCLocalSwiftPackageReference', relativePath='.')
 core = obj('coreProduct', 'XCSwiftPackageProductDependency', package=package, productName='InkstoneCore')
 frameworks = obj('frameworks', 'PBXFrameworksBuildPhase', buildActionMask=2147483647, files=[obj('coreBuild', 'PBXBuildFile', productRef=core)], runOnlyForDeploymentPostprocessing=0)
 sourcePhase = obj('sources', 'PBXSourcesBuildPhase', buildActionMask=2147483647, files=sources, runOnlyForDeploymentPostprocessing=0)
-resources = obj('resources', 'PBXResourcesBuildPhase', buildActionMask=2147483647, files=[obj('assetsBuild', 'PBXBuildFile', fileRef=assets)], runOnlyForDeploymentPostprocessing=0)
+resources = obj('resources', 'PBXResourcesBuildPhase', buildActionMask=2147483647, files=[obj('assetsBuild', 'PBXBuildFile', fileRef=assets), obj('privacyManifestBuild', 'PBXBuildFile', fileRef=privacy)], runOnlyForDeploymentPostprocessing=0)
 appConfig = configs('app', {
     'PRODUCT_BUNDLE_IDENTIFIER':'com.inkstone.mobile', 'PRODUCT_NAME':'Inkstone',
     'IPHONEOS_DEPLOYMENT_TARGET':'17.0', 'SWIFT_VERSION':'5.0', 'TARGETED_DEVICE_FAMILY':'1,2',
     'INFOPLIST_FILE':'App/Info.plist', 'SDKROOT':'iphoneos', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator',
-    'CODE_SIGN_STYLE':'Automatic', 'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'1',
+    'CODE_SIGN_STYLE':'Automatic', 'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'4',
     'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon', 'ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME':'AccentColor',
     'GENERATE_INFOPLIST_FILE':'NO', 'SUPPORTS_MACCATALYST':'NO', 'ENABLE_PREVIEWS':'YES',
     'SWIFT_EMIT_LOC_STRINGS':'YES', 'LD_RUNPATH_SEARCH_PATHS':['$(inherited)', '@executable_path/Frameworks']})

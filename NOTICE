@@ -7,3 +7,6 @@ Its Apache 2.0 license is reproduced in LICENSE.
 The mobile implementation is written in Swift and references the desktop project's
 Markdown file conventions, Chinese product name, and teal accent palette.
 No GPUI or vendored desktop library code is included in this application.
+
+Markdown parsing uses Swift Markdown and swift-cmark. Their license notices are
+in Sources/InkstoneCore/Resources/ThirdPartyNotices.txt and bundled with InkstoneCore.

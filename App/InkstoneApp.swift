@@ -1,5 +1,4 @@
 import SwiftUI
-import InkstoneCore
 #if os(iOS)
 import UIKit
 #else
@@ -14,7 +13,7 @@ struct InkstoneApp: App {
     }
 }
 enum InkTheme {
-    static var accent: Color {
+    static let accent: Color = {
         #if os(iOS)
         Color(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark
@@ -28,7 +27,7 @@ enum InkTheme {
                 : NSColor(red: 0.14, green: 0.46, blue: 0.54, alpha: 1)
         })
         #endif
-    }
+    }()
     static var background: Color {
         #if os(iOS)
         Color(uiColor: .systemGroupedBackground)

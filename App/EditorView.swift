@@ -8,6 +8,10 @@ struct EditorView: View {
     @State private var current: Note
     @State private var text: String
     @State private var reading = true
+    @FocusState private var editorFocused: Bool
+    @State private var switcher = false
+    @State private var switchQuery = ""
+    @State private var switchSelection: Note?
     @State private var saving = false
     @State private var draftTask: Task<Void, Never>?
     @State private var status = "已保存"
@@ -19,6 +23,14 @@ struct EditorView: View {
     @State private var exporting = false
     @State private var pendingLink: Note?
     @State private var linkPrompt = false
+    @State private var parsedSource: String?
+    @State private var document: MarkdownDocument?
+    @State private var characterCount = 0
+    private struct ParseRequest: Equatable {
+        let text: String
+        let needed: Bool
+    }
+    private var parsedDocument: MarkdownDocument? { parsedSource == text ? document : nil }
     private var dirty: Bool { text != current.text }
     init(note: Note) {
         _current = State(initialValue: note); _text = State(initialValue: note.text)
@@ -27,32 +39,24 @@ struct EditorView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                HStack {
-                    Picker("编辑模式", selection: $reading) { Text("阅读").tag(true); Text("源码").tag(false) }.pickerStyle(.segmented).frame(maxWidth: 230)
-                    Spacer()
-                    Text(status).font(.caption).foregroundStyle(.secondary).accessibilityLabel("保存状态：" + status)
-                }.padding(.horizontal, 20).padding(.vertical, 12)
-                Divider()
                 if reading {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 18) {
-                            HStack {
-                                Text(current.folder.isEmpty ? "我的笔记" : current.folder)
-                                Spacer()
-                                Text("\(text.count) 字符")
-                            }.font(.caption).foregroundStyle(.secondary)
-                            MarkdownReader(text: text, openLink: openLink, toggleTask: toggleTask)
-                            let backlinks = NoteIndex.backlinks(to: current.path, notes: store.notes)
+                            if let document = parsedDocument {
+                                MarkdownReader(blocks: document.blocks, openLink: openLink, toggleTask: toggleTask)
+                            } else { ProgressView("正在解析正文…") }
+                            let backlinks = store.noteIndex.backlinks(to: current.path)
                             if !backlinks.isEmpty {
                                 Divider().padding(.top, 28)
                                 Label("提到这篇笔记", systemImage: "link").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                                 ForEach(backlinks) { note in Button(note.title) { navigate(to: note) } }
                             }
-                        }.padding(24).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity, alignment: .center)
+                        }.padding(.horizontal, 16).padding(.vertical, 12).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity, alignment: .center)
                     }.textSelection(.enabled)
                 } else {
                     TextEditor(text: $text).font(.system(.body, design: .monospaced))
-                        .padding(.horizontal, 14).accessibilityLabel("Markdown 正文")
+                        .focused($editorFocused)
+                        .padding(.horizontal, 10).accessibilityLabel("Markdown 正文")
                         #if os(iOS)
                         .textInputAutocapitalization(.sentences)
                         .scrollDismissesKeyboard(.interactively)
@@ -65,26 +69,69 @@ struct EditorView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { if dirty { closePrompt = true } else { dismiss() } }.disabled(saving)
+                    Button { if dirty { closePrompt = true } else { dismiss() } } label: {
+                        Image(systemName: "chevron.left")
+                    }.accessibilityLabel("返回笔记列表").disabled(saving)
                 }
+                ToolbarItem(placement: .principal) {
+                    Button { editorFocused = false; switcher = true } label: {
+                        VStack(spacing: 1) {
+                            HStack(spacing: 4) {
+                                Text(current.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                                Image(systemName: "chevron.down").font(.caption2)
+                            }
+                            Text(status).font(.caption2).foregroundStyle(.secondary)
+                        }.foregroundStyle(.primary)
+                    }.buttonStyle(.plain).accessibilityLabel(current.title + "，" + status + "，切换笔记")
+                }
+                #if os(iOS)
+                ToolbarItemGroup(placement: .keyboard) {
+                    Text("Markdown").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button { editorFocused = false } label: { Image(systemName: "keyboard.chevron.compact.down") }
+                        .accessibilityLabel("收起键盘")
+                }
+                #endif
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { Task { _ = await save() } } label: { Image(systemName: "checkmark") }.disabled(!dirty || saving).accessibilityLabel("保存笔记").keyboardShortcut("s")
+                    Button { reading.toggle(); editorFocused = !reading } label: {
+                        Image(systemName: reading ? "pencil" : "book")
+                    }.accessibilityLabel(reading ? "编辑 Markdown 源码" : "阅读笔记")
+                    if dirty {
+                        Button { Task { _ = await save() } } label: { Image(systemName: "checkmark") }
+                            .disabled(saving).accessibilityLabel("保存笔记").keyboardShortcut("s")
+                    }
                     Menu {
-                        Button { store.toggleFavorite(current.path) } label: { Label(store.favorites.contains(current.path) ? "取消收藏" : "收藏", systemImage: "bookmark") }
+                        Button { store.toggleFavorite(current.path) } label: { Label(store.favorites.contains(current.path) ? "移除书签" : "书签", systemImage: "bookmark") }
                         Button { info = true } label: { Label("大纲与链接", systemImage: "list.bullet.indent") }
                         Button { history = true } label: { Label("历史与草稿", systemImage: "clock.arrow.circlepath") }
                         Button { exporting = true } label: { Label("导出 Markdown", systemImage: "square.and.arrow.up") }
                         Button { Task { await saveCopy() } } label: { Label("另存副本", systemImage: "doc.on.doc") }
                         Divider()
                         Button(role: .destructive) { deletePrompt = true } label: { Label("删除笔记", systemImage: "trash") }.disabled(dirty)
-                    } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("笔记操作").disabled(saving)
+                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("笔记操作").disabled(saving)
                 }
             }
             .disabled(saving)
             .interactiveDismissDisabled(dirty || saving)
+            .onAppear { editorFocused = !reading }
             .onChange(of: text) { _, _ in scheduleDraft() }
             .onChange(of: scenePhase) { _, phase in if phase != .active { flushDraft() } }
             .onDisappear { flushDraft() }
+            .task(id: ParseRequest(text: text, needed: reading || info)) {
+                guard reading || info, parsedDocument == nil else { return }
+                let source = text
+                let worker = Task.detached(priority: .userInitiated) { () -> (MarkdownDocument, Int)? in
+                    guard !Task.isCancelled else { return nil }
+                    let document = MarkdownDocument(source)
+                    guard !Task.isCancelled else { return nil }
+                    return (document, source.count)
+                }
+                let result = await withTaskCancellationHandler {
+                    await worker.value
+                } onCancel: { worker.cancel() }
+                guard !Task.isCancelled, let result else { return }
+                document = result.0; characterCount = result.1; parsedSource = source
+            }
             .confirmationDialog("保存本次修改？", isPresented: $closePrompt, titleVisibility: .visible) {
                 Button("保存并关闭") { Task { if await save() { dismiss() } } }
                 Button("保留恢复草稿并关闭") { Task { if await persistDraft() { dismiss() } } }
@@ -102,6 +149,10 @@ struct EditorView: View {
             } message: { Text(issue ?? "") }
             .sheet(isPresented: $history) { RecoveryView(path: current.path).environmentObject(store) }
             .sheet(isPresented: $info) { outline }
+            .sheet(isPresented: $switcher, onDismiss: {
+                switchQuery = ""
+                if let note = switchSelection { switchSelection = nil; navigate(to: note) }
+            }) { noteSwitcher }
             .fileExporter(isPresented: $exporting, document: MarkdownFile(text: text), contentType: MarkdownFile.contentType, defaultFilename: current.title + ".md") { result in
                 if case .failure(let error) = result { issue = error.localizedDescription }
             }
@@ -110,41 +161,77 @@ struct EditorView: View {
         .frame(minWidth: 620, idealWidth: 720, minHeight: 600)
         #endif
     }
+    private var noteSwitcher: some View {
+        NavigationStack {
+            List {
+                let notes = store.notes.filter {
+                    switchQuery.isEmpty || $0.title.localizedStandardContains(switchQuery) || $0.path.localizedStandardContains(switchQuery)
+                }
+                if notes.isEmpty { Text("没有找到笔记").foregroundStyle(.secondary) }
+                ForEach(notes) { note in
+                    Button {
+                        if note.path != current.path { switchSelection = note }
+                        switcher = false
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(note.title).foregroundStyle(.primary).lineLimit(1)
+                                if !note.folder.isEmpty { Text(note.folder).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                            }
+                            Spacer()
+                            if note.path == current.path { Image(systemName: "checkmark").accessibilityLabel("当前笔记") }
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+            }.listStyle(.plain)
+            .navigationTitle("切换笔记")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .searchable(text: $switchQuery, prompt: "查找标题或路径")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { switcher = false } } }
+        }
+    }
     private var outline: some View {
         NavigationStack {
             List {
-                Section("大纲") {
-                    if MarkdownMetadata(text).headings.isEmpty { Text("暂无标题").foregroundStyle(.secondary) }
-                    ForEach(MarkdownMetadata(text).headings) { heading in
-                        Text(String(repeating: "  ", count: heading.level - 1) + heading.title)
-                    }
+                Section("笔记信息") {
+                    LabeledContent("位置", value: current.folder.isEmpty ? store.vaultName : current.folder)
+                    if parsedDocument != nil { LabeledContent("字符数", value: "\(characterCount)") }
                 }
-                Section("双向链接") {
-                    ForEach(Array(MarkdownMetadata(text).links.enumerated()), id: \.offset) { _, link in
-                        Button(link.label) { info = false; openLink(link.target) }
+                if let document = parsedDocument {
+                    let headings = document.headings
+                    Section("大纲") {
+                        if headings.isEmpty { Text("暂无标题").foregroundStyle(.secondary) }
+                        ForEach(headings) { heading in
+                            Text(String(repeating: "  ", count: heading.level - 1) + heading.title)
+                        }
                     }
-                }
+                    if !document.links.isEmpty {
+                        Section("双向链接") {
+                            ForEach(Array(document.links.enumerated()), id: \.offset) { _, link in
+                                Button(link.label) { info = false; openLink(link.target) }
+                            }
+                        }
+                    }
+                } else { ProgressView("正在解析正文…") }
             }.navigationTitle("大纲与链接").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { info = false } } }
         }
     }
     private func switchNote(_ note: Note) { draftTask?.cancel(); current = note; text = note.text; status = "已保存"; pendingLink = nil }
     private func navigate(to note: Note) { if dirty { pendingLink = note; linkPrompt = true } else { switchNote(note) } }
     private func openLink(_ target: String) {
-        switch NoteIndex.resolve(target, from: current.path, notes: store.notes) {
+        switch store.noteIndex.resolve(target, from: current.path) {
         case .found(let path): if let note = store.notes.first(where: { $0.path == path }) { navigate(to: note) }
         case .missing: issue = "尚未找到「\(target)」。可返回笔记列表创建对应笔记。"
         case .ambiguous: issue = "有多篇同名笔记，请在链接中补充文件夹路径。"
         }
     }
     private func toggleTask(_ line: Int) {
-        var lines = text.components(separatedBy: "\n")
-        guard lines.indices.contains(line) else { return }
-        if let range = lines[line].range(of: #"\[[ xX]\]"#, options: .regularExpression) {
-            let done = lines[line][range].lowercased() == "[x]"
-            lines[line].replaceSubrange(range, with: done ? "[ ]" : "[x]")
-            text = lines.joined(separator: "\n")
-        }
+        guard let document = parsedDocument else { return }
+        text = document.togglingTask(at: line)
     }
+
     private func scheduleDraft() {
         draftTask?.cancel()
         guard dirty else { status = "已保存"; return }
@@ -188,9 +275,8 @@ struct EditorView: View {
         } catch { issue = error.localizedDescription }
     }
     private func delete() async {
-        guard let vault = store.vault else { return }
         saving = true; defer { saving = false }
-        do { try await vault.trash(path: current.path, expected: current.text); await store.refresh(); dismiss() }
+        do { try await store.deleteNote(current); dismiss() }
         catch { issue = error.localizedDescription }
     }
 }

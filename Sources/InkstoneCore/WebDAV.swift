@@ -1,0 +1,127 @@
+import Foundation
+
+public struct WebDAVSettings: Codable, Equatable, Sendable {
+    public var url = ""
+    public var username = ""
+    public init() {}
+    public func endpoint() throws -> URL {
+        guard var parts = URLComponents(string: url.trimmingCharacters(in: .whitespacesAndNewlines)),
+              ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host?.isEmpty == false,
+              parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
+            throw SyncFailure("请输入完整的 HTTP(S) WebDAV 目录地址，账号填写在用户名栏。")
+        }
+        if !parts.path.hasSuffix("/") { parts.path += "/" }
+        guard let result = parts.url else { throw VaultError.invalidPath }
+        return result
+    }
+}
+protocol SyncRemote: Sendable {
+    var identity: String { get }
+    func prepare() async throws
+    func manifest() async throws -> (SyncManifest, String?)
+    func download(_ hash: String) async throws -> Data
+    func upload(_ hash: String, data: Data) async throws
+    func publish(_ manifest: SyncManifest, revision: String?) async throws
+}
+private final class BoundedResponse: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    let limit: Int64
+    init(limit: Int) { self.limit = Int64(limit) }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        if totalBytesWritten > limit || totalBytesExpectedToWrite > limit { downloadTask.cancel() }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+}
+public final class WebDAV: SyncRemote, @unchecked Sendable {
+    private let root: URL
+    private let authorization: String
+    private let session: URLSession
+    public let identity: String
+    public init(settings: WebDAVSettings, password: String) throws {
+        root = try settings.endpoint()
+        identity = root.absoluteString + "\n" + settings.username
+        authorization = "Basic " + Data((settings.username + ":" + password).utf8).base64EncodedString()
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 300
+        config.urlCache = nil
+        session = URLSession(configuration: config)
+    }
+    deinit { session.invalidateAndCancel() }
+    // Download tasks keep network response bodies off the heap until the size is checked.
+    private func request(_ method: String, _ path: String, body: Data? = nil, headers: [String: String] = [:], limit: Int = 8 * 1024 * 1024) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: root.appendingPathComponent(path))
+        request.httpMethod = method; request.httpBody = body
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        let (file, response) = try await session.download(for: request, delegate: BoundedResponse(limit: limit))
+        defer { try? FileManager.default.removeItem(at: file) }
+        guard let response = response as? HTTPURLResponse else { throw SyncFailure("无效的 WebDAV 响应。") }
+        let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= limit else { throw SyncFailure("WebDAV 响应超过大小限制。") }
+        return (try Data(contentsOf: file), response)
+    }
+    private func check(_ response: HTTPURLResponse) throws {
+        guard (200...299).contains(response.statusCode) else {
+            if response.statusCode == 412 { throw SyncFailure("其他设备已更新云端，请重新同步。") }
+            if [401, 403].contains(response.statusCode) { throw SyncFailure("WebDAV 认证失败或无访问权限。") }
+            throw SyncFailure("WebDAV 返回 HTTP \(response.statusCode)。")
+        }
+    }
+    public func testConnection() async throws {
+        let (_, response) = try await request("PROPFIND", "", body: Data("<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/></d:prop></d:propfind>".utf8), headers: ["Depth": "0", "Content-Type": "application/xml"])
+        try check(response)
+        guard response.statusCode == 207 else { throw SyncFailure("服务器未返回 WebDAV 目录响应。") }
+    }
+    private func checkLegacy() async throws {
+        let (_, response) = try await request("GET", "inkstone-v1/manifest.json")
+        guard response.statusCode == 404 else {
+            try check(response)
+            throw SyncFailure("检测到 inkstone-v1 旧目录。请按桌面端指引完成迁移后重试。")
+        }
+    }
+    func prepare() async throws {
+        try await testConnection()
+        try await checkLegacy()
+        for path in ["inkstone/", "inkstone/objects/"] {
+            let (_, response) = try await request("MKCOL", path)
+            if response.statusCode != 405 { try check(response) }
+        }
+    }
+    func manifest() async throws -> (SyncManifest, String?) {
+        try await checkLegacy()
+        let (data, response) = try await request("GET", "inkstone/manifest.json")
+        if response.statusCode == 404 { return (SyncManifest(), nil) }
+        try check(response)
+        guard let tag = response.value(forHTTPHeaderField: "ETag"), Self.strongETag(tag) else {
+            throw SyncFailure("服务器未提供有效强 ETag，无法安全同步。")
+        }
+        return (try SyncManifest.decode(data), tag)
+    }
+    static func strongETag(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        return bytes.count >= 2 && bytes.first == 34 && bytes.last == 34 && bytes.dropFirst().dropLast().allSatisfy { $0 == 0x21 || (0x23...0x7e).contains($0) || $0 >= 0x80 }
+    }
+    func download(_ hash: String) async throws -> Data {
+        let (data, response) = try await request("GET", "inkstone/objects/" + hash, limit: 128 * 1024 * 1024)
+        try check(response)
+        guard digest(data) == hash else { throw SyncFailure("云端文件内容校验失败。") }
+        return data
+    }
+    func upload(_ hash: String, data: Data) async throws {
+        guard digest(data) == hash else { throw SyncFailure("上传文件内容校验失败。") }
+        let (_, response) = try await request("PUT", "inkstone/objects/" + hash, body: data, headers: ["If-None-Match": "*", "Content-Type": "application/octet-stream"])
+        if response.statusCode == 412 { _ = try await download(hash) }
+        else { try check(response) }
+    }
+    func publish(_ manifest: SyncManifest, revision: String?) async throws {
+        try manifest.validate()
+        let data = try JSONEncoder().encode(manifest)
+        guard data.count <= 8 * 1024 * 1024 else { throw SyncFailure("同步清单超过大小限制。") }
+        let condition = revision.map { ["If-Match": $0] } ?? ["If-None-Match": "*"]
+        let (_, response) = try await request("PUT", "inkstone/manifest.json", body: data, headers: condition.merging(["Content-Type": "application/json"]) { a, _ in a })
+        try check(response)
+        guard [200, 201, 204].contains(response.statusCode) else { throw SyncFailure("服务器未确认清单发布。") }
+    }
+}

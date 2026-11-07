@@ -1,9 +1,10 @@
 import Foundation
 
 public enum VaultError: LocalizedError {
-    case invalidPath, conflict, exists, tooLarge, invalidUTF8
+    case invalidPath, conflict, exists, tooLarge, invalidUTF8, busy
     public var errorDescription: String? {
         switch self {
+        case .busy: return "正在同步，请稍后再试。"
         case .invalidPath: return "文件路径无效，或包含库外链接。"
         case .conflict: return "文件已被其他应用修改或删除。当前编辑已保留，请另存副本后重新打开原文。"
         case .exists: return "同名笔记已存在，请更换名称。"
@@ -25,13 +26,15 @@ public struct RecoveryRecord: Codable, Identifiable, Sendable {
 public struct VaultSnapshot: Sendable {
     public let notes: [Note]
     public let warnings: [String]
+    public let folders: [String]
+    public let index: NoteIndex
 }
 
 /// All IO is serialized off the main actor. Metadata lives outside the shared vault.
 public actor Vault {
     public let root: URL
-    private let recovery: URL
-    private let fm = FileManager.default
+    let recovery: URL
+    let fm = FileManager.default
     public init(root: URL, recovery: URL, createIfNeeded: Bool = true) throws {
         if createIfNeeded {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -45,10 +48,21 @@ public actor Vault {
         self.recovery = recovery
         try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
     }
+    private var noteCache: [String: Note] = [:]
+    private var cachedIndex = NoteIndex(notes: [])
+    var syncing = false
+    func requireIdle() throws { if syncing { throw VaultError.busy } }
+    func fileURL(_ path: String) throws -> URL {
+        try SyncManifest.validatePath(path)
+        return try checkedURL(path)
+    }
     private func url(_ path: String) throws -> URL {
+        guard path.lowercased().hasSuffix(".md") else { throw VaultError.invalidPath }
+        return try fileURL(path)
+    }
+    private func checkedURL(_ path: String) throws -> URL {
         guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
-              !path.split(separator: "/").contains(where: { $0 == ".." || $0.hasPrefix(".") }),
-              path.lowercased().hasSuffix(".md") else { throw VaultError.invalidPath }
+              !path.split(separator: "/").contains(where: { $0 == ".." || $0.hasPrefix(".") }) else { throw VaultError.invalidPath }
         // Resolve each existing component: Foundation does not consistently resolve
         // intermediate symlinks when the final file has not been created yet.
         var result = root
@@ -64,10 +78,11 @@ public actor Vault {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         guard (values.fileSize ?? 0) <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let data = try Data(contentsOf: url)
+        guard data.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         guard let text = String(data: data, encoding: .utf8) else { throw VaultError.invalidUTF8 }
         return text
     }
-    private func coordinated<T>(_ url: URL, writing: Bool, _ operation: (URL) throws -> T) throws -> T {
+    func coordinated<T>(_ url: URL, writing: Bool, _ operation: (URL) throws -> T) throws -> T {
         let coordinator = NSFileCoordinator()
         var error: NSError?
         var result: Result<T, Error>?
@@ -81,26 +96,46 @@ public actor Vault {
         return try result.get()
     }
     public func scan() throws -> VaultSnapshot {
-        var notes: [Note] = [], warnings: [String] = []
-        guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey], options: [.skipsHiddenFiles], errorHandler: { url, error in
+        var notes: [Note] = [], warnings: [String] = [], folders: [String] = []
+        var nextCache: [String: Note] = [:]
+        guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey], options: [.skipsHiddenFiles], errorHandler: { url, error in
             warnings.append("\(url.lastPathComponent)：\(error.localizedDescription)"); return true
         }) else { throw CocoaError(.fileReadUnknown) }
         for case let file as URL in walker {
             do {
-                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey])
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey])
                 if values.isSymbolicLink == true { walker.skipDescendants(); continue }
+                if values.isDirectory == true { folders.append(String(file.standardizedFileURL.resolvingSymlinksInPath().path.dropFirst(root.path.count + 1))); continue }
                 guard values.isRegularFile == true, file.pathExtension.lowercased() == "md" else { continue }
                 let canonical = file.standardizedFileURL.resolvingSymlinksInPath()
                 guard canonical.path.hasPrefix(root.path + "/") else { throw VaultError.invalidPath }
                 let path = String(canonical.path.dropFirst(root.path.count + 1))
                 let checked = try url(path)
                 let text = try coordinated(checked, writing: false) { try read($0) }
-                notes.append(Note(path: path, text: text, modified: values.contentModificationDate ?? .distantPast))
+                let modified = values.contentModificationDate ?? .distantPast
+                // Read external content on every scan, but reuse derived data for
+                // unchanged notes, including edits that preserve timestamps.
+                let note: Note
+                if let cached = noteCache[path], cached.modified == modified, cached.text == text { note = cached }
+                else { note = Note(path: path, text: text, modified: modified) }
+                nextCache[path] = note
+                notes.append(note)
             } catch { warnings.append("\(file.lastPathComponent)：\(error.localizedDescription)") }
         }
-        return VaultSnapshot(notes: notes.sorted { $0.modified > $1.modified }, warnings: warnings)
+        notes.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+        if nextCache != noteCache { cachedIndex = NoteIndex(notes: notes) }
+        noteCache = nextCache
+        return VaultSnapshot(notes: notes, warnings: warnings, folders: folders.sorted(), index: cachedIndex)
+    }
+    public func importFile(_ source: URL) throws -> Note {
+        try requireIdle()
+        let access = source.startAccessingSecurityScopedResource()
+        defer { if access { source.stopAccessingSecurityScopedResource() } }
+        let text = try coordinated(source, writing: false) { try read($0) }
+        return try create(path: source.deletingPathExtension().lastPathComponent + ".md", text: text)
     }
     public func create(path: String, text: String) throws -> Note {
+        try requireIdle()
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let target = try url(path)
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -111,6 +146,7 @@ public actor Vault {
         return Note(path: path, text: text)
     }
     public func save(path: String, text: String, expected: String) throws -> Note {
+        try requireIdle()
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let target = try url(path)
         try coordinated(target, writing: true) { file in
@@ -124,6 +160,7 @@ public actor Vault {
         return Note(path: path, text: text)
     }
     public func trash(path: String, expected: String) throws {
+        try requireIdle()
         let target = try url(path)
         try coordinated(target, writing: true) { file in
             guard fm.fileExists(atPath: file.path), try read(file) == expected else { throw VaultError.conflict }
@@ -131,6 +168,22 @@ public actor Vault {
             try fm.removeItem(at: file)
         }
         try clearDraft(path: path)
+    }
+    public func createFolder(path: String) throws {
+        try requireIdle()
+        let target = try fileURL(path)
+        guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+    }
+    public func move(path: String, to destination: String) throws {
+        try requireIdle()
+        let source = try fileURL(path), target = try fileURL(destination)
+        guard !destination.lowercased().hasPrefix(path.lowercased() + "/") else { throw VaultError.invalidPath }
+        guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try coordinated(source, writing: true) { source in
+            try fm.moveItem(at: source, to: target)
+        }
     }
     private func record(_ entry: RecoveryRecord) throws {
         let data = try JSONEncoder().encode(entry)
@@ -156,7 +209,7 @@ public actor Vault {
         if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
     }
     public func records(path: String? = nil) throws -> [RecoveryRecord] {
-        guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil) else { return [] }
+        guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }
         var records: [RecoveryRecord] = []
         for case let file as URL in walker where file.pathExtension == "json" {
             let record = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
