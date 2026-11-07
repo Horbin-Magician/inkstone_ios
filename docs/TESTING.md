@@ -121,3 +121,11 @@
 - ZIP 导出当前限制 128 MB、少于 65,535 条目；附件加载/插入限制 32 MB。照片、图片粘贴、Quick Look、系统导出界面、批量失败重试、最大辅助字号及 VoiceOver 仍需完整交互矩阵。
 
 最终收尾：57 项回归、共享界面编译、iOS（含分享扩展）构建、全部 plist/entitlements 和 `git diff --check` 通过；最终构建已安装并启动于 iPhone 测试库。随后 Mac 锁屏，无法再进行最终 iPhone 保存状态的点击复查；以上交互记录仅对应实际完成的步骤，未把未执行项计为通过。
+
+## 2026-11-07 TestFlight 0.1.0（5）发布
+
+- 源码提交 `33d3776` 已推送 `origin/main`，主应用和分享扩展构建号同步升级为 5。
+- 发布前 57 项核心回归、共享界面编译及 plist/entitlements 检查通过。
+- 真机 Release 签名归档通过，`codesign --verify --deep --strict` 通过；主应用和扩展的 App Group 签名权限均为 `group.com.inkstone.mobile`。此结果验证签名配置，不代替真机分享链路测试。
+- 北京时间 13:11 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。未进行 App Store 正式版提审。
+- 网页 App Store Connect 尚无登录会话，因此未确认 Apple 后续处理结果、测试组分发状态或外部测试审核。归档和上传日志保存于 `.build/releases/testflight-0.1.0-5/`。
