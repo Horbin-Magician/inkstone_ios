@@ -11,4 +11,4 @@ if [[ "${DEVELOPER_DIR:-$(xcode-select -p)}" == /Library/Developer/CommandLineTo
     if [[ -f "$plugin" ]]; then set -- "$@" -Xswiftc -load-plugin-library -Xswiftc "$plugin"; fi
 fi
 swift test "$@"
-plutil -lint App/Info.plist Inkstone.xcodeproj/project.pbxproj
+plutil -lint App/Info.plist ShareExtension/Info.plist App/Inkstone.entitlements ShareExtension/InkstoneShare.entitlements Inkstone.xcodeproj/project.pbxproj

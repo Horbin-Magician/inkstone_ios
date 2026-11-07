@@ -12,6 +12,78 @@ final class VaultTests {
         vault = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
     }
     deinit { try? FileManager.default.removeItem(at: base) }
+    @Test func archivePreservesUnicodeAndBinaryFiles() async throws {
+        _ = try await vault.create(path: "中文/笔记.md", text: "正文👩‍💻")
+        let image = try await vault.insertAttachment(Data([0, 255, 1, 2]), extension: "png", from: "中文/笔记.md")
+        try await vault.writeDraft(path: "中文/笔记.md", text: "秘密草稿")
+        try await vault.createFolder(path: "空目录")
+        let bytes = try await vault.exportArchive()
+        #if os(macOS)
+        let archive = base.appendingPathComponent("backup.zip")
+        try bytes.write(to: archive)
+        let extracted = base.appendingPathComponent("extracted")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-x", "-k", archive.path, extracted.path]
+        try process.run(); process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(FileManager.default.fileExists(atPath: extracted.appendingPathComponent("空目录").path))
+        #expect(try Data(contentsOf: extracted.appendingPathComponent("中文/笔记.md")) == Data("正文👩‍💻".utf8))
+        #expect(try Data(contentsOf: extracted.appendingPathComponent("中文/" + image)) == Data([0, 255, 1, 2]))
+        #endif
+        #expect(!String(decoding: bytes, as: UTF8.self).contains("秘密草稿"))
+    }
+    @Test func pruningNeverRemovesDrafts() async throws {
+        _ = try await vault.create(path: "a.md", text: "original")
+        _ = try await vault.save(path: "a.md", text: "saved", expected: "original")
+        try await vault.writeDraft(path: "a.md", text: "draft")
+        #expect(try await vault.pruneRecovery(before: Date().addingTimeInterval(1)) == 1)
+        #expect(try await vault.draft(path: "a.md")?.text == "draft")
+    }
+    @Test func resumedDraftRetainsOriginalBaseAcrossExternalEdits() async throws {
+        _ = try await vault.create(path: "a.md", text: "original")
+        try await vault.writeDraft(path: "a.md", text: "phone draft", expected: "original")
+        try Data("desktop edit".utf8).write(to: root.appendingPathComponent("a.md"))
+        let draft = try #require(await vault.draft(path: "a.md"))
+        #expect(draft.baseText == "original")
+        do {
+            _ = try await vault.save(path: "a.md", text: draft.text, expected: try #require(draft.baseText))
+            Issue.record("Resumed draft overwrote external edit")
+        } catch VaultError.conflict {}
+        #expect(try String(contentsOf: root.appendingPathComponent("a.md"), encoding: .utf8) == "desktop edit")
+    }
+    @Test func movingUnsavedDraftDoesNotCreateAFileOrOverwriteAnotherDraft() async throws {
+        try await vault.writeDraft(path: "a.md", text: "first", expected: "")
+        try await vault.writeDraft(path: "b.md", text: "second", expected: "")
+        do { try await vault.move(path: "a.md", to: "b.md"); Issue.record("Overwrote another draft") }
+        catch VaultError.exists {}
+        try await vault.move(path: "a.md", to: "folder/a.md")
+        #expect(try await vault.draft(path: "folder/a.md")?.text == "first")
+        #expect(try await vault.draft(path: "a.md") == nil)
+        #expect(try await vault.scan().notes.isEmpty)
+    }
+    @Test func newDraftDoesNotCreateMarkdownAndMovesWithFolder() async throws {
+        try await vault.writeDraft(path: "folder/new.md", text: "未完成中文", expected: "", isNew: true)
+        #expect(try await vault.scan().notes.isEmpty)
+        #expect(try await vault.draft(path: "folder/new.md")?.text == "未完成中文")
+        _ = try await vault.create(path: "folder/new.md", text: "原文")
+        try await vault.move(path: "folder", to: "moved")
+        #expect(try await vault.draft(path: "moved/new.md")?.text == "未完成中文")
+        #expect(try await vault.draft(path: "moved/new.md")?.isNew == true)
+        #expect(try await vault.draft(path: "folder/new.md") == nil)
+        _ = try await vault.save(path: "moved/new.md", text: "完成", expected: "原文")
+        #expect(try await vault.draft(path: "moved/new.md") == nil)
+    }
+    @Test func localAttachmentsRoundTripAndRejectEscape() async throws {
+        let data = Data([1, 2, 3])
+        let relative = try await vault.insertAttachment(data, extension: "png", from: "folder/note.md")
+        #expect(try await vault.attachment(relative, from: "folder/note.md") == data)
+        #expect(try await vault.attachment("../" + relative, from: "folder/nested/note.md") == data)
+        for source in ["../../outside.png", "file:///tmp/test.png", "https://example.com/a.png", ".hidden/a.png"] {
+            do { _ = try await vault.attachment(source, from: "note.md"); Issue.record("Unsafe attachment accepted") }
+            catch {}
+        }
+    }
     @Test func scanInvalidatesLinksAfterCreateMoveAndDelete() async throws {
         _ = try await vault.create(path: "link.md", text: "[[target]]")
         #expect(try await vault.scan().index.resolve("target", from: "link.md") == .missing)

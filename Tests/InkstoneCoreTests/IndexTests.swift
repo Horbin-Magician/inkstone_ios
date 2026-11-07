@@ -37,9 +37,13 @@ final class IndexTests {
     @Test func cachedNoteSummaryAndMetadataMatchContent() {
         let note = Note(path: "folder/a.md", text: "# Heading\n\nfirst\nsecond\nthird\nfourth\n[[target]]")
         #expect(note.title == "a" && note.folder == "folder")
-        #expect(note.excerpt == "first second third")
+        #expect(note.excerpt == "first second third fourth target")
         #expect(note.metadata.links.first?.target == "target")
         #expect(note.metadata.headings.first?.title == "Heading")
+    }
+    @Test func previewStripsMarkupAndFrontmatter() {
+        let source = "---\ntitle: secret\n---\n# Title\n\n**正文** [[target|别名]] [网站](https://example.com)\n\n- [ ] 待办\n\n```swift\nignored()\n```"
+        #expect(Note(path: "a.md", text: source).excerpt == "正文 别名 网站 待办")
     }
     @Test func testAmbiguousLinkDoesNotSelectArbitraryNote() {
         let notes = [Note(path: "one/a.md", text: ""), Note(path: "two/a.md", text: "")]

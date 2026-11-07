@@ -66,6 +66,20 @@ public struct MarkdownDocument: Sendable {
         return result
     }
 
+    public var previewText: String {
+        func collect(_ blocks: [MarkdownBlock]) -> [String] {
+            blocks.flatMap { block -> [String] in
+                switch block.kind {
+                case .heading, .code, .html, .divider: return []
+                default:
+                    let text = block.inline.map(\.plainText).joined()
+                    return (text.isEmpty ? [] : [text]) + collect(block.children)
+                }
+            }
+        }
+        return collect(blocks).joined(separator: " ")
+    }
+
     public var headings: [Heading] {
         var result: [Heading] = []
         func visit(_ block: MarkdownBlock) {

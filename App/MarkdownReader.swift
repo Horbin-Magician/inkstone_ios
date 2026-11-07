@@ -1,15 +1,26 @@
 import SwiftUI
 import InkstoneCore
 
+private struct AttachmentLoaderKey: EnvironmentKey {
+    static let defaultValue: (@Sendable (String) async throws -> Data)? = nil
+}
+extension EnvironmentValues {
+    var attachmentLoader: (@Sendable (String) async throws -> Data)? {
+        get { self[AttachmentLoaderKey.self] }
+        set { self[AttachmentLoaderKey.self] = newValue }
+    }
+}
+
 /// Native rendering of the shared Markdown tree. Parsing never rewrites the source.
 struct MarkdownReader: View {
     let blocks: [MarkdownBlock]
     var openLink: (String) -> Void
     var toggleTask: (Int) -> Void
+    var openAttachment: (String) -> Void = { _ in }
 
     var body: some View {
         LazyVStack(alignment: .leading, spacing: 12) {
-            ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask) }
+            ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask).id(block.line) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.openURL, OpenURLAction { url in
                 if url.scheme == "inkstone", let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "target" })?.value {
@@ -19,6 +30,7 @@ struct MarkdownReader: View {
                 if url.scheme == nil, !url.path.isEmpty, url.path.lowercased().hasSuffix(".md") {
                     openLink(url.path); return .handled
                 }
+                if url.scheme == nil { openAttachment(url.relativeString); return .handled }
                 return .discarded
             })
     }
@@ -30,7 +42,7 @@ private struct MarkdownBlocks: View {
     var spacing: CGFloat = 12
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
-            ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask) }
+            ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask).id(block.line) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -59,7 +71,7 @@ private struct MarkdownBlockView: View {
             HStack(alignment: .top, spacing: 8) {
                 if let checked {
                     Button { toggleTask(block.line) } label: {
-                        Image(systemName: checked ? "checkmark.circle.fill" : "circle").frame(minWidth: 32, minHeight: 32)
+                        Image(systemName: checked ? "checkmark.circle.fill" : "circle").frame(minWidth: 44, minHeight: 44)
                     }.buttonStyle(.plain).foregroundStyle(InkTheme.accent)
                         .accessibilityLabel(checked ? "取消完成任务" : "完成任务")
                     children.strikethrough(checked).padding(.top, 5)
@@ -153,7 +165,7 @@ private struct MarkdownInlineView: View {
                             }
                         }.frame(maxWidth: 640)
                     } else {
-                        Label(alt.isEmpty ? source : alt, systemImage: "photo").foregroundStyle(.secondary)
+                        LocalMarkdownImage(source: source, alt: alt)
                     }
                 } else { Text(attributed(segment)) }
             }
@@ -185,6 +197,38 @@ private struct MarkdownInlineView: View {
             case .image(_, let alt): part = AttributedString(alt)
             }
             result.append(part)
+        }
+    }
+}
+
+private struct LocalMarkdownImage: View {
+    @Environment(\.attachmentLoader) private var loader
+    let source: String
+    let alt: String
+    @State private var data: Data?
+    @State private var failed = false
+    var body: some View {
+        Group {
+            #if os(iOS)
+            if let data, let image = UIImage(data: data) {
+                Image(uiImage: image).resizable().scaledToFit().accessibilityLabel(alt.isEmpty ? "图片" : alt)
+            } else { placeholder }
+            #else
+            if let data, let image = NSImage(data: data) {
+                Image(nsImage: image).resizable().scaledToFit().accessibilityLabel(alt.isEmpty ? "图片" : alt)
+            } else { placeholder }
+            #endif
+        }.frame(maxWidth: 640)
+        .task(id: source) {
+            data = nil; failed = false
+            do { data = try await loader?(source); failed = data == nil }
+            catch { failed = true }
+        }
+    }
+    private var placeholder: some View {
+        Group {
+            if failed { Label(alt.isEmpty ? "本地图片不可用：" + source : alt, systemImage: "photo").foregroundStyle(.secondary) }
+            else { ProgressView("加载图片") }
         }
     }
 }

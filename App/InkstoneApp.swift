@@ -9,7 +9,7 @@ import AppKit
 struct InkstoneApp: App {
     @StateObject private var store = LibraryStore()
     var body: some Scene {
-        WindowGroup { LibraryView().environmentObject(store).tint(InkTheme.accent).task { await store.start() } }
+        WindowGroup { LibraryView().environmentObject(store).tint(InkTheme.accent).task { await store.start(); await store.importSharedInbox() } }
     }
 }
 enum InkTheme {
