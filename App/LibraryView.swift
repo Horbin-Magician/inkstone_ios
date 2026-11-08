@@ -8,7 +8,6 @@ struct LibraryView: View {
     private enum Scope: String, CaseIterable { case recent = "最近", folders = "文件夹", favorites = "书签" }
     @AppStorage("libraryScope") private var scope: Scope = .folders
     @State private var importing = false
-    @State private var syncDetails = false
     @State private var snapshotNote: Note?
     @State private var renaming = false
     @State private var settings = false
@@ -36,7 +35,7 @@ struct LibraryView: View {
     private var searchRequest: SearchRequest { SearchRequest(query: query, revision: store.notesRevision) }
     private var searching: Bool { !query.isEmpty && completedSearch != searchRequest }
     private var libraryInteractionActive: Bool {
-        selecting || settings || recovery || importing || syncDetails || newFolder || moving != nil || deleting != nil || deletingFolder != nil || deleteInProgress
+        selecting || settings || recovery || importing || newFolder || moving != nil || deleting != nil || deletingFolder != nil || deleteInProgress
     }
     private var libraryContent: some View {
         GeometryReader { proxy in
@@ -86,7 +85,6 @@ struct LibraryView: View {
             } message: { Text(store.error ?? "") }
         }
         .sheet(item: $snapshotNote) { SnapshotReaderView(note: $0) }
-        .sheet(isPresented: $syncDetails) { SyncStatusView().environmentObject(store) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [MarkdownFile.contentType, .plainText], allowsMultipleSelection: true) { result in
             switch result {
             case .success(let urls): Task { await store.importFiles(urls) }
@@ -272,12 +270,6 @@ struct LibraryView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                Button { syncDetails = true } label: {
-                    Label(store.syncSummary, systemImage: store.syncIssue == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
-                        .font(.caption).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }.padding(.horizontal)
-            }
             if showSearch {
                 HStack(spacing: 10) {
                     ZStack {
