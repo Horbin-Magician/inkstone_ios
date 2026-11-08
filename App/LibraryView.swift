@@ -239,17 +239,20 @@ struct LibraryView: View {
         .listStyle(.plain)
         .overlay {
             if visibleNotes.isEmpty && !store.loading && !store.syncing && !searching && (scope != .folders || !query.isEmpty || childFolders.isEmpty) {
-                ContentUnavailableView {
-                    Label(query.isEmpty ? "开始记录" : "没有找到笔记", systemImage: "doc.text")
-                } description: {
-                    Text(query.isEmpty ? "随时记下想法，或导入已有 Markdown 笔记。" : "搜索范围为整个笔记库，试试其他关键词。")
-                } actions: {
-                    if query.isEmpty {
-                        Button("创建笔记") { store.beginNote() }.buttonStyle(.borderedProminent)
-                        Button("导入笔记") { importing = true }.buttonStyle(.bordered)
+                if scope == .favorites && query.isEmpty {
+                    ContentUnavailableView("暂无书签", systemImage: "bookmark", description: Text("为笔记添加书签后，会显示在这里。"))
+                } else {
+                    ContentUnavailableView {
+                        Label(query.isEmpty ? "开始记录" : "没有找到笔记", systemImage: "doc.text")
+                    } description: {
+                        Text(query.isEmpty ? "随时记下想法，或导入已有 Markdown 笔记。" : "搜索范围为整个笔记库，试试其他关键词。")
+                    } actions: {
+                        if query.isEmpty {
+                            Button("创建笔记") { store.beginNote() }.buttonStyle(.borderedProminent)
+                            Button("导入笔记") { importing = true }.buttonStyle(.bordered)
+                        }
                     }
                 }
-
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
