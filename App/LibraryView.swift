@@ -297,13 +297,9 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Menu {
-                    Section(store.vaultName) {
-                        Picker("浏览范围", selection: $scope) {
-                            ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                        }
-                    }
                     Button { scope = .folders; folderName = ""; newFolder = true } label: { Label("新建文件夹", systemImage: "folder.badge.plus") }
-                    Button("选择笔记") { selecting = true; selectedPaths = [] }.disabled(store.selected != nil)
+                    Button { selecting = true; selectedPaths = [] } label: { Label("选择笔记", systemImage: "checkmark.circle") }
+                        .disabled(store.selected != nil)
                     Divider()
                     Button { settings = true } label: { Label("设置与同步", systemImage: "gearshape") }
                 } label: {
