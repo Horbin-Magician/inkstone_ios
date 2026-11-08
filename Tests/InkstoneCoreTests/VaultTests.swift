@@ -15,7 +15,7 @@ final class VaultTests {
     @Test func archivePreservesUnicodeAndBinaryFiles() async throws {
         _ = try await vault.create(path: "中文/笔记.md", text: "正文👩‍💻")
         let image = try await vault.insertAttachment(Data([0, 255, 1, 2]), extension: "png", from: "中文/笔记.md")
-        try await vault.writeDraft(path: "中文/笔记.md", text: "秘密草稿")
+        try legacyDraft(path: "中文/笔记.md", text: "秘密草稿")
         try await vault.createFolder(path: "空目录")
         let bytes = try await vault.exportArchive()
         #if os(macOS)
@@ -33,46 +33,43 @@ final class VaultTests {
         #endif
         #expect(!String(decoding: bytes, as: UTF8.self).contains("秘密草稿"))
     }
-    @Test func pruningNeverRemovesDrafts() async throws {
-        _ = try await vault.create(path: "a.md", text: "original")
-        _ = try await vault.save(path: "a.md", text: "saved", expected: "original")
-        try await vault.writeDraft(path: "a.md", text: "draft")
-        #expect(try await vault.pruneRecovery(before: Date().addingTimeInterval(1)) == 1)
-        #expect(try await vault.draft(path: "a.md")?.text == "draft")
+    private func legacyDraft(path: String, text: String) throws {
+        let entry = RecoveryRecord(path: path, text: text, kind: "恢复草稿")
+        let directory = base.appendingPathComponent("recovery/drafts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try JSONEncoder().encode(entry).write(to: directory.appendingPathComponent(entry.id.uuidString + ".json"))
     }
-    @Test func resumedDraftRetainsOriginalBaseAcrossExternalEdits() async throws {
-        _ = try await vault.create(path: "a.md", text: "original")
-        try await vault.writeDraft(path: "a.md", text: "phone draft", expected: "original")
-        try Data("desktop edit".utf8).write(to: root.appendingPathComponent("a.md"))
-        let draft = try #require(await vault.draft(path: "a.md"))
-        #expect(draft.baseText == "original")
-        do {
-            _ = try await vault.save(path: "a.md", text: draft.text, expected: try #require(draft.baseText))
-            Issue.record("Resumed draft overwrote external edit")
-        } catch VaultError.conflict {}
-        #expect(try String(contentsOf: root.appendingPathComponent("a.md"), encoding: .utf8) == "desktop edit")
+    @Test func migrationPreservesOriginalAndCreatesMarkdownExactlyOnce() async throws {
+        _ = try await vault.create(path: "中文/a.md", text: "desktop edit")
+        try legacyDraft(path: "中文/a.md", text: "phone edit")
+        try legacyDraft(path: "new.md", text: "new note")
+        try await vault.migrateLegacyDrafts()
+        try await vault.migrateLegacyDrafts()
+        let notes = try await vault.scan().notes
+        #expect(notes.count == 3)
+        #expect(notes.first { $0.path == "中文/a.md" }?.text == "desktop edit")
+        #expect(notes.contains { $0.text == "phone edit" && $0.path.hasPrefix("中文/a-恢复-") })
+        #expect(notes.contains { $0.text == "new note" })
+        #expect(try await vault.records().isEmpty)
     }
-    @Test func movingUnsavedDraftDoesNotCreateAFileOrOverwriteAnotherDraft() async throws {
-        try await vault.writeDraft(path: "a.md", text: "first", expected: "")
-        try await vault.writeDraft(path: "b.md", text: "second", expected: "")
-        do { try await vault.move(path: "a.md", to: "b.md"); Issue.record("Overwrote another draft") }
-        catch VaultError.exists {}
-        try await vault.move(path: "a.md", to: "folder/a.md")
-        #expect(try await vault.draft(path: "folder/a.md")?.text == "first")
-        #expect(try await vault.draft(path: "a.md") == nil)
-        #expect(try await vault.scan().notes.isEmpty)
+    @Test func migrationRetriesAfterCopyWasAlreadyWritten() async throws {
+        try legacyDraft(path: "a.md", text: "unsaved")
+        let entry = try #require(await vault.records().first)
+        let path = "a-恢复-" + entry.id.uuidString + ".md"
+        _ = try await vault.create(path: path, text: entry.text)
+        try await vault.migrateLegacyDrafts()
+        #expect(try await vault.scan().notes.count == 1)
+        #expect(try await vault.records().isEmpty)
     }
-    @Test func newDraftDoesNotCreateMarkdownAndMovesWithFolder() async throws {
-        try await vault.writeDraft(path: "folder/new.md", text: "未完成中文", expected: "", isNew: true)
-        #expect(try await vault.scan().notes.isEmpty)
-        #expect(try await vault.draft(path: "folder/new.md")?.text == "未完成中文")
-        _ = try await vault.create(path: "folder/new.md", text: "原文")
-        try await vault.move(path: "folder", to: "moved")
-        #expect(try await vault.draft(path: "moved/new.md")?.text == "未完成中文")
-        #expect(try await vault.draft(path: "moved/new.md")?.isNew == true)
-        #expect(try await vault.draft(path: "folder/new.md") == nil)
-        _ = try await vault.save(path: "moved/new.md", text: "完成", expected: "原文")
-        #expect(try await vault.draft(path: "moved/new.md") == nil)
+    @Test func migrationDoesNotRemoveLegacyRecordOnConflict() async throws {
+        try legacyDraft(path: "a.md", text: "unsaved")
+        let entry = try #require(await vault.records().first)
+        let path = "a-恢复-" + entry.id.uuidString + ".md"
+        _ = try await vault.create(path: path, text: "changed copy")
+        do { try await vault.migrateLegacyDrafts(); Issue.record("Expected conflict") }
+        catch VaultError.conflict {}
+        #expect(try await vault.records().first?.text == "unsaved")
+        #expect(try await vault.scan().notes.first?.text == "changed copy")
     }
     @Test func localAttachmentsRoundTripAndRejectEscape() async throws {
         let data = Data([1, 2, 3])
@@ -142,9 +139,8 @@ final class VaultTests {
         #expect(snapshot.notes.map(\.text) == [text])
         #expect(snapshot.notes.first?.path == "读书/笔记.md")
     }
-    @Test func testSaveCreatesHistoryAndClearsDraft() async throws {
+    @Test func testSaveCreatesHistory() async throws {
         _ = try await vault.create(path: "a.md", text: "before")
-        try await vault.writeDraft(path: "a.md", text: "after")
         _ = try await vault.save(path: "a.md", text: "after", expected: "before")
         let records = try await vault.records()
         #expect(records.count == 1)
@@ -208,13 +204,12 @@ final class VaultTests {
         #expect(restored.text == "original")
         #expect(try String(contentsOf: root.appendingPathComponent("a.md"), encoding: .utf8) == "new")
     }
-    @Test func testDraftSurvivesRepositoryReopen() async throws {
-        try await vault.writeDraft(path: "a.md", text: "unsaved")
+    @Test func savedEditsSurviveRepositoryReopenWithoutPrivateDrafts() async throws {
+        _ = try await vault.create(path: "a.md", text: "first")
+        _ = try await vault.save(path: "a.md", text: "finished", expected: "first")
         let reopened = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
-        let records = try await reopened.records()
-        #expect(records.first?.text == "unsaved")
-        let snapshot = try await reopened.scan()
-        #expect((snapshot.notes.isEmpty))
+        #expect(try await reopened.scan().notes.first?.text == "finished")
+        #expect(try await reopened.records().allSatisfy { $0.kind == "历史版本" })
     }
     @Test func testScanReportsInvalidEncodingAndIgnoresHiddenDirectories() async throws {
         try Data([0xff, 0xfe, 0xff]).write(to: root.appendingPathComponent("bad.md"))

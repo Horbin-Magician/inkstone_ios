@@ -320,7 +320,6 @@ struct LibraryView: View {
                     if selecting { Image(systemName: selectedPaths.contains(note.path) ? "checkmark.circle.fill" : "circle").foregroundStyle(InkTheme.accent) }
                     Text(note.title).font(.body.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                     if store.favorites.contains(note.path) { Image(systemName: "bookmark.fill").foregroundStyle(InkTheme.accent).font(.caption2) }
-                    if store.drafts[note.path] != nil { Text("有草稿").font(.caption).foregroundStyle(InkTheme.accent) }
                     Spacer(minLength: 0)
                     Text(note.modified, format: .dateTime.month().day()).font(.caption2).foregroundStyle(.tertiary)
                 }

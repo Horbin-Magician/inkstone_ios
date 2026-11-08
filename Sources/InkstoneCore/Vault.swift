@@ -161,7 +161,6 @@ public actor Vault {
                 try Data(text.utf8).write(to: file, options: .atomic)
             }
         }
-        try clearDraft(path: path)
         return Note(path: path, text: text)
     }
     public func trash(path: String, expected: String) throws {
@@ -172,7 +171,6 @@ public actor Vault {
             try record(RecoveryRecord(path: path, text: expected, kind: "已删除"))
             try fm.removeItem(at: file)
         }
-        try clearDraft(path: path)
     }
     public func createFolder(path: String) throws {
         try requireIdle()
@@ -185,63 +183,30 @@ public actor Vault {
         let source = try fileURL(path), target = try fileURL(destination)
         guard !destination.lowercased().hasPrefix(path.lowercased() + "/") else { throw VaultError.invalidPath }
         guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
-        if !fm.fileExists(atPath: source.path), let draft = try draft(path: path) {
-            guard try self.draft(path: destination) == nil else { throw VaultError.exists }
-            try record(RecoveryRecord(path: path, text: draft.text, kind: "历史版本"))
-            try writeDraft(path: destination, text: draft.text, expected: draft.baseText, isNew: draft.isNew ?? false)
-            try clearDraft(path: path)
-            return
-        }
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let drafts = try records().filter { $0.kind == "恢复草稿" && ($0.path == path || $0.path.hasPrefix(path + "/")) }
-        for draft in drafts {
-            guard try self.draft(path: destination + draft.path.dropFirst(path.count)) == nil else { throw VaultError.exists }
-        }
-        // Keep a recovery version before changing file identity.
-        for draft in drafts { try record(RecoveryRecord(path: draft.path, text: draft.text, kind: "历史版本")) }
         try coordinated(source, writing: true) { source in
             try fm.moveItem(at: source, to: target)
-        }
-        for draft in drafts {
-            try writeDraft(path: destination + draft.path.dropFirst(path.count), text: draft.text, expected: draft.baseText, isNew: draft.isNew ?? false)
-            try clearDraft(path: draft.path)
         }
     }
     private func record(_ entry: RecoveryRecord) throws {
         let data = try JSONEncoder().encode(entry)
         try data.write(to: recovery.appendingPathComponent(entry.id.uuidString + ".json"), options: .atomic)
     }
-    private func draftURL(_ path: String) -> URL {
-        let name = Data(path.utf8).base64EncodedString().replacingOccurrences(of: "/", with: "_")
-        // Paths can exceed filesystem component limits; a stable UUID-shaped digest is unnecessary here.
-        // Split the encoded path into directory components to preserve a reversible, collision-free key.
-        let chunks = stride(from: 0, to: name.count, by: 100).map { offset -> String in
-            String(name.dropFirst(offset).prefix(100))
+    /// Convert old private drafts into real files without overwriting the original.
+    /// The record ID makes retries safe if the app exits after writing the copy.
+    public func migrateLegacyDrafts() throws {
+        try requireIdle()
+        guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
+        for case let file as URL in walker where file.pathExtension == "json" {
+            let entry = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
+            guard entry.kind == "恢复草稿" else { continue }
+            let path = (entry.path as NSString).deletingPathExtension + "-恢复-" + entry.id.uuidString + ".md"
+            do { _ = try create(path: path, text: entry.text) }
+            catch VaultError.exists {
+                guard try coordinated(try url(path), writing: false, { try read($0) }) == entry.text else { throw VaultError.conflict }
+            }
+            try fm.removeItem(at: file)
         }
-        return chunks.reduce(recovery.appendingPathComponent("drafts")) { $0.appendingPathComponent($1) }.appendingPathExtension("json")
-    }
-    public func writeDraft(path: String, text: String, expected: String? = nil, isNew: Bool = false) throws {
-        _ = try url(path)
-        guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
-        let target = draftURL(path)
-        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(RecoveryRecord(path: path, text: text, kind: "恢复草稿", baseText: expected, isNew: isNew)).write(to: target, options: .atomic)
-    }
-    public func draft(path: String) throws -> RecoveryRecord? {
-        _ = try url(path)
-        let target = draftURL(path)
-        guard fm.fileExists(atPath: target.path) else { return nil }
-        return try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: target))
-    }
-
-    public func discardDraft(path: String) throws {
-        guard let entry = try draft(path: path) else { return }
-        try record(RecoveryRecord(path: path, text: entry.text, kind: "已删除"))
-        try clearDraft(path: path)
-    }
-    public func clearDraft(path: String) throws {
-        let target = draftURL(path)
-        if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
     }
     public func records(path: String? = nil) throws -> [RecoveryRecord] {
         guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return [] }

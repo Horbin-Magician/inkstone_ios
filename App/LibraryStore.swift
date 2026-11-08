@@ -7,7 +7,6 @@ import InkstoneCore
 final class LibraryStore: ObservableObject {
     @Published var folders: [String] = []
     @Published var currentFolder = "" { didSet { defaults.set(currentFolder, forKey: favoriteKey + ".folder") } }
-    @Published var drafts: [String: RecoveryRecord] = [:]
     @Published var pendingSync = false
     @Published var lastSync: Date?
     @Published var syncConflicts: [String] = []
@@ -89,6 +88,7 @@ final class LibraryStore: ObservableObject {
             let identity = external ? url.standardizedFileURL.resolvingSymlinksInPath().path : "local"
             let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
             let next = try Vault(root: url, recovery: appSupport.appendingPathComponent("Recovery/" + key), createIfNeeded: !external)
+            try await next.migrateLegacyDrafts()
             let snapshot = try await next.scan()
             if external {
                 #if os(iOS)
@@ -107,7 +107,6 @@ final class LibraryStore: ObservableObject {
             lastSync = defaults.object(forKey: syncKey + ".lastSuccess") as? Date
             syncConflicts = defaults.stringArray(forKey: syncKey + ".conflicts") ?? []
             pendingSync = true
-            await refreshDrafts()
             favorites = Set(defaults.stringArray(forKey: favoriteKey) ?? [])
             webDAV = defaults.data(forKey: syncKey).flatMap { try? JSONDecoder().decode(WebDAVSettings.self, from: $0) } ?? WebDAVSettings()
             automaticSync = defaults.object(forKey: syncKey + ".automatic") as? Bool ?? true
@@ -130,7 +129,6 @@ final class LibraryStore: ObservableObject {
         guard let vault, !loading else { return }
         loading = true; defer { loading = false }
         do { let result = try await vault.scan(); apply(result)
-            await refreshDrafts()
             if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" } }
         catch {
             if reportErrors { self.error = error.localizedDescription }
@@ -222,18 +220,7 @@ final class LibraryStore: ObservableObject {
         if pendingSync { return automaticSync ? "等待同步" : "等待手动同步" }
         return lastSync == nil ? "尚未同步" : "已同步 · 上次检查无待传输内容"
     }
-    func refreshDrafts() async {
-        do {
-            let records = try await vault?.records() ?? []
-            let next = Dictionary(records.filter { $0.kind == "恢复草稿" }.map { ($0.path, $0) }, uniquingKeysWith: { a, b in a.date > b.date ? a : b })
-            if next != drafts { drafts = next; notesRevision &+= 1 }
-        } catch { self.error = "读取草稿失败：" + error.localizedDescription }
-    }
-    var browsableNotes: [Note] {
-        let paths = Set(notes.map(\.path))
-        return (notes + drafts.values.filter { !paths.contains($0.path) }.map { Note(path: $0.path, text: "", modified: $0.date) })
-            .sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
-    }
+    var browsableNotes: [Note] { notes }
     func openNote(_ note: Note) {
         if selected == nil { selected = note } else { requestedNote = note }
     }
@@ -269,8 +256,7 @@ final class LibraryStore: ObservableObject {
     func deleteNote(_ note: Note) async throws {
         guard !syncing, let vault else { throw VaultError.busy }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
-        if notes.contains(where: { $0.path == note.path }) { try await vault.trash(path: note.path, expected: note.text) }
-        else { try await vault.discardDraft(path: note.path) }
+        try await vault.trash(path: note.path, expected: note.text)
         favorites.remove(note.path)
         defaults.set(Array(favorites), forKey: favoriteKey)
         await refresh()

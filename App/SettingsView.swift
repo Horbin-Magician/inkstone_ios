@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var prune = false
     @AppStorage("recoveryDays") private var recoveryDays = 90
     @State private var importPicker = false
-    @AppStorage("automaticSave") private var automaticSave = false
     @AppStorage("readingSize") private var readingSize = 17.0
     @AppStorage("readingSpacing") private var readingSpacing = 5.0
     @AppStorage("dailyFolder") private var dailyFolder = "日记"
@@ -71,8 +70,7 @@ struct SettingsView: View {
                 Text("开启后，回到前台和本地修改后自动同步，空闲时每 2 分钟检查一次。打开笔记或设置期间暂缓，关闭后补同步；退到后台不再发起同步。失败会延迟重试，冲突保留副本。")
             }.disabled(store.syncing || store.loading)
             Section("编辑") {
-                Toggle("自动保存已有笔记", isOn: $automaticSave)
-                Text("停止输入约 2 秒后写入文件。新笔记仍需首次手动保存；输入法组词期间不自动保存。外部文件冲突会停止自动保存，请核对或另存副本。").font(.caption)
+                Text("新笔记和已有笔记均在停止输入后自动保存到 Markdown 文件，返回或切换笔记时立即保存。输入法组词期间暂缓保存；外部文件冲突时请核对或另存副本。").font(.caption)
             }
             Section("阅读") {
                 Slider(value: $readingSize, in: 14...28, step: 1) { Text("字体大小") }
@@ -97,10 +95,10 @@ struct SettingsView: View {
                     Text("30 天").tag(30); Text("90 天").tag(90); Text("365 天").tag(365)
                 }
                 Button("清理过期历史与已删除记录", role: .destructive) { prune = true }
-                Text("清理仅在确认后执行，始终保留草稿。整库导出包含 Markdown 和附件，不含本机草稿、历史和密码；当前支持总计 128 MB 以内的文件。").font(.caption)
+                Text("清理仅在确认后执行。整库导出包含 Markdown 和附件，不含历史和密码；当前支持总计 128 MB 以内的文件。").font(.caption)
             }
             Section {
-                Button { recovery = true } label: { Label("历史、草稿与已删除笔记", systemImage: "clock.arrow.circlepath") }
+                Button { recovery = true } label: { Label("历史与已删除笔记", systemImage: "clock.arrow.circlepath") }
             } header: { Text("恢复") } footer: {
                 Text("恢复会创建副本。记录仅存于此设备，卸载会丢失。")
             }
@@ -117,7 +115,7 @@ struct SettingsView: View {
                 do { _ = try await store.vault?.pruneRecovery(before: Date().addingTimeInterval(-Double(recoveryDays) * 86400)) }
                 catch { store.error = error.localizedDescription }
             } }
-        } message: { Text("此操作不可撤销；草稿和笔记文件不受影响。") }
+        } message: { Text("此操作不可撤销；笔记文件不受影响。") }
         .fileImporter(isPresented: $folderPicker, allowedContentTypes: [.folder]) { result in
             Task {
                 do { try await store.open(result.get(), external: true) }
@@ -142,16 +140,15 @@ struct RecoveryView: View {
     @State private var restoredNote: Note?
     @State private var openRestored = false
     @State private var working = false
-    @State private var kind = "恢复草稿"
+    @State private var kind = "历史版本"
     var body: some View {
         NavigationStack {
             List {
                 Picker("记录类型", selection: $kind) {
-                    Text("草稿").tag("恢复草稿")
                     Text("历史版本").tag("历史版本")
                     Text("已删除").tag("已删除")
                 }.pickerStyle(.segmented)
-                if store.records.filter({ $0.kind == kind }).isEmpty { ContentUnavailableView("暂无恢复记录", systemImage: "clock.arrow.circlepath", description: Text("编辑草稿、保存前的版本和已删除笔记会显示在这里。")) }
+                if store.records.filter({ $0.kind == kind }).isEmpty { ContentUnavailableView("暂无恢复记录", systemImage: "clock.arrow.circlepath", description: Text("保存前的版本和已删除笔记会显示在这里。")) }
                 ForEach(store.records.filter { $0.kind == kind }) { record in
                     Button { preview = record } label: {
                         VStack(alignment: .leading, spacing: 6) {
@@ -204,7 +201,7 @@ struct SyncStatusView: View {
                     Text(store.syncSummary)
                     Text(store.syncStatus).font(.footnote).foregroundStyle(.secondary)
                     if let date = store.lastSync { LabeledContent("上次成功", value: date.formatted(date: .abbreviated, time: .shortened)) }
-                    Text("本机草稿不会上传。请先保存到文件并关闭笔记，再进行同步。")
+                    Text("修改会自动保存到文件，关闭笔记后可进行同步。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if store.selected != nil { Text("正在查看或编辑笔记，为保护文件一致性，已暂停同步。") }
                     if let issue = store.syncIssue {

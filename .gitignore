@@ -3,3 +3,6 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
+RichEditor/node_modules/
+RichEditor/test-results/
+RichEditor/playwright-report/

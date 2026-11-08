@@ -14,10 +14,9 @@ struct EditorView: View {
     @State private var current: Note
     @State private var text: String
     @State private var reading = true
-    @State private var resumeDraft: RecoveryRecord?
-    @State private var resumedBase: String?
-    @State private var resumedWithoutBase = false
-    private var draftExpected: String? { resumedWithoutBase ? nil : (resumedBase ?? current.text) }
+    @AppStorage("markdownSourceEditing") private var sourceEditing = false
+    @StateObject private var richEditor = RichEditorBridge()
+    @State private var richDocumentID = UUID()
     @State private var syncDetails = false
     @State private var isNew = false
     @State private var filename = ""
@@ -32,7 +31,6 @@ struct EditorView: View {
     #if os(iOS)
     @State private var photo: PhotosPickerItem?
     #endif
-    @AppStorage("automaticSave") private var automaticSave = false
     @State private var autoSaveBlocked = false
     @ScaledMetric(relativeTo: .body) private var readingScale = 1.0
     @AppStorage("readingSize") private var readingSize = 17.0
@@ -43,17 +41,14 @@ struct EditorView: View {
     @State private var switchQuery = ""
     @State private var switchSelection: Note?
     @State private var saving = false
-    @State private var draftTask: Task<Void, Never>?
+    @State private var saveTask: Task<Void, Never>?
     @State private var status = "已保存到文件"
     @State private var issue: String?
-    @State private var closePrompt = false
     @State private var deletePrompt = false
     @State private var history = false
     @State private var info = false
     @State private var exporting = false
-    @State private var pendingLink: Note?
     @State private var missingLink: String?
-    @State private var linkPrompt = false
     @State private var parsedSource: String?
     @State private var document: MarkdownDocument?
     @State private var characterCount = 0
@@ -72,7 +67,7 @@ struct EditorView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 HStack {
-                    Text(reading ? "阅读" : "编辑").font(.caption.weight(.semibold))
+                    Text(reading ? "阅读" : sourceEditing ? "源码编辑" : "富文本编辑").font(.caption.weight(.semibold))
                     if isNew {
                         Button { chooseFolder = true } label: { Label(targetFolder.isEmpty ? "根目录" : targetFolder, systemImage: "folder") }.font(.caption).lineLimit(1)
                     } else { Text(current.folder.isEmpty ? "根目录" : current.folder).font(.caption).lineLimit(1) }
@@ -117,6 +112,18 @@ struct EditorView: View {
                         }
                     }
                 } else {
+                    if !sourceEditing {
+                        RichMarkdownEditor(text: $text, focused: $editorFocused, composing: $composing,
+                            documentID: richDocumentID, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
+                            titles: store.notes.map { "/" + ($0.path as NSString).deletingPathExtension }, bridge: richEditor,
+                            loadAttachment: { [vault = store.vault, path = current.path] source in
+                                guard let vault else { throw VaultError.invalidPath }
+                                return try await vault.attachment(source, from: path)
+                            }, pasteImage: { data, ext in
+                                attachmentWorking = true; defer { attachmentWorking = false }
+                                return await insertImage(data, extension: ext)
+                            }, onError: { issue = $0 })
+                    } else {
                     #if os(iOS)
                     MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: $composing, titles: store.notes.map { "/" + ($0.path as NSString).deletingPathExtension }, pasteImage: { data in
                         attachmentWorking = true; defer { attachmentWorking = false }
@@ -126,6 +133,7 @@ struct EditorView: View {
                     TextEditor(text: $text).font(.system(.body, design: .monospaced))
                         .focused($macEditorFocused).onChange(of: editorFocused) { _, value in macEditorFocused = value }.padding(.horizontal, 10).accessibilityLabel("Markdown 正文")
                     #endif
+                    }
                 }
             }
             .navigationTitle(current.title)
@@ -134,7 +142,7 @@ struct EditorView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { if dirty { closePrompt = true } else { closeEditor() } } label: {
+                    Button { Task { if await saveIfNeeded() { closeEditor() } } } label: {
                         Image(systemName: "chevron.left")
                     }.accessibilityLabel("返回笔记列表").disabled(saving)
                 }
@@ -150,65 +158,61 @@ struct EditorView: View {
                     }.buttonStyle(.plain).accessibilityLabel(current.title + "，" + status + "，切换笔记")
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { reading.toggle(); editorFocused = !reading } label: {
+                    Button { Task { await richEditor.flush(); guard !composing else { return }; reading.toggle(); editorFocused = !reading } } label: {
                         Image(systemName: reading ? "pencil" : "book")
-                    }.accessibilityLabel(reading ? "编辑 Markdown 源码" : "阅读笔记")
+                    }.accessibilityLabel(reading ? "编辑笔记" : "阅读笔记").disabled(composing)
                     Group {
                         Button { Task { _ = await save() } } label: { Image(systemName: "checkmark") }
                             .disabled(saving || composing || (!dirty && !isNew)).accessibilityLabel("保存笔记").keyboardShortcut("s")
                     }
                     Menu {
+                        Button {
+                            Task {
+                                await richEditor.flush()
+                                guard !composing else { return }
+                                sourceEditing.toggle(); reading = false; editorFocused = true
+                            }
+                        } label: { Label(sourceEditing ? "切换到富文本编辑" : "切换到 Markdown 源码", systemImage: sourceEditing ? "textformat" : "chevron.left.forwardslash.chevron.right") }
+                            .disabled(composing)
+                        Divider()
                         #if os(iOS)
                         PhotosPicker(selection: $photo, matching: .images) { Label("照片追加到末尾", systemImage: "photo") }
                         #endif
                         Button { attachmentPicker = true } label: { Label("附件追加到末尾", systemImage: "paperclip") }
                         Button { store.toggleFavorite(current.path) } label: { Label(store.favorites.contains(current.path) ? "移除书签" : "书签", systemImage: "bookmark") }
                         Button { info = true } label: { Label("大纲与链接", systemImage: "list.bullet.indent") }
-                        Button { history = true } label: { Label("历史与草稿", systemImage: "clock.arrow.circlepath") }
+                        Button { history = true } label: { Label("历史版本", systemImage: "clock.arrow.circlepath") }
                         Button { exporting = true } label: { Label("导出 Markdown", systemImage: "square.and.arrow.up") }
                         Button { Task { await saveCopy() } } label: { Label("另存副本", systemImage: "doc.on.doc") }
                         Divider()
                         Button(role: .destructive) { deletePrompt = true } label: { Label("删除笔记", systemImage: "trash") }.disabled(dirty || isNew)
-                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("笔记操作").disabled(saving)
+                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("笔记操作").disabled(saving || composing)
                 }
             }
-            .disabled(saving || attachmentWorking)
-            .interactiveDismissDisabled(dirty || saving || attachmentWorking)
+            .disabled(attachmentWorking)
+            .interactiveDismissDisabled(needsSave || saving || attachmentWorking)
             .task(id: current.path) {
                 isNew = !store.notes.contains { $0.path == current.path }
                 filename = isNew ? "" : current.title
                 targetFolder = current.folder
-                status = isNew ? "尚未保存到文件" : "已保存到文件"
-                do { resumeDraft = try await store.vault?.draft(path: current.path) }
-                catch { issue = "读取草稿失败：" + error.localizedDescription }
+                status = isNew ? "输入后自动保存" : "已保存到文件"
                 if searchQuery.isEmpty { searchQuery = store.searchTerm }
                 editorFocused = !reading
                 locateSearch()
             }
             .sheet(isPresented: $chooseFolder) { NoteFolderPicker(selection: $targetFolder).environmentObject(store) }
             .sheet(isPresented: $syncDetails) { SyncStatusView().environmentObject(store) }
-            .confirmationDialog("发现本机草稿", isPresented: Binding(get: { resumeDraft != nil }, set: { if !$0 { resumeDraft = nil } }), titleVisibility: .visible) {
-                Button("继续编辑") {
-                    if let draft = resumeDraft {
-                        if isNew && draft.isNew != true { isNew = false }
-                        resumedBase = draft.baseText
-                        resumedWithoutBase = draft.baseText == nil && !isNew
-                        text = draft.text; reading = false; editorFocused = true
-                        if resumedWithoutBase || (draft.baseText != nil && draft.baseText != current.text && !isNew) {
-                            issue = "草稿的原文件已变化，或这是无法核对原文的旧版草稿。请使用另存副本保留内容，再核对原文件。"
-                        }
-                    }
-                    resumeDraft = nil
-                }
-                Button(isNew ? "暂不恢复" : "查看已保存文件", role: .cancel) { resumeDraft = nil }
-            } message: { Text("草稿尚未写入 Markdown 文件，也没有同步到其他设备。") }
             .onChange(of: store.requestedNote) { _, note in
                 if let note { store.requestedNote = nil; navigate(to: note) }
             }
-            .onChange(of: text) { _, _ in scheduleDraft() }
-            .onChange(of: composing) { _, marked in if !marked { scheduleDraft() } }
-            .onChange(of: scenePhase) { _, phase in if phase != .active { flushDraft() } }
-            .onDisappear { flushDraft() }
+            .onChange(of: text) { _, _ in scheduleSave() }
+            .onChange(of: filename) { _, _ in if isNew { scheduleSave() } }
+            .onChange(of: targetFolder) { _, _ in if isNew { scheduleSave() } }
+            .onChange(of: reading) { _, value in if value { flushSave() } }
+            .onChange(of: editorFocused) { _, value in if !value { flushSave() } }
+            .onChange(of: composing) { _, marked in if !marked { scheduleSave() } }
+            .onChange(of: scenePhase) { _, phase in if phase != .active { flushSave() } }
+            .onDisappear { flushSave() }
             .task(id: ParseRequest(text: text, needed: reading || info)) {
                 guard reading || info, parsedDocument == nil else { return }
                 let source = text
@@ -225,16 +229,6 @@ struct EditorView: View {
                 document = result.0; characterCount = result.1; parsedSource = source
                 locateSearch()
             }
-            .confirmationDialog("保存本次修改？", isPresented: $closePrompt, titleVisibility: .visible) {
-                Button("保存并关闭") { Task { if await save() { closeEditor() } } }
-                Button("保留恢复草稿并关闭") { Task { if await persistDraft() { closeEditor() } } }
-                Button("继续编辑", role: .cancel) {}
-            } message: { Text("保留草稿不会修改 Markdown 原文件，再次打开可继续编辑。") }
-            .confirmationDialog("切换笔记前保存修改？", isPresented: $linkPrompt, titleVisibility: .visible) {
-                Button("保存并打开") { Task { if await save(), let note = pendingLink { switchNote(note) } } }
-                Button("保留草稿并打开") { Task { if await persistDraft(), let note = pendingLink { switchNote(note) } } }
-                Button("继续编辑", role: .cancel) { pendingLink = nil }
-            }
             .confirmationDialog("删除这篇笔记？", isPresented: $deletePrompt, titleVisibility: .visible) {
                 Button("删除笔记", role: .destructive) { Task { await delete() } }
             } message: { Text("会先保存一份本机恢复记录。共享文件夹中的删除可能同步到其他设备。") }
@@ -243,7 +237,7 @@ struct EditorView: View {
                     guard let target = missingLink else { return }
                     missingLink = nil
                     Task {
-                        guard await persistDraft(), let vault = store.vault else { return }
+                        guard await saveIfNeeded(), let vault = store.vault else { return }
                         do {
                             let path = try NoteIndex.creationPath(target, from: current.path)
                             let note = try await vault.create(path: path, text: "")
@@ -252,7 +246,7 @@ struct EditorView: View {
                     }
                 }
                 Button("取消", role: .cancel) { missingLink = nil }
-            } message: { Text((missingLink ?? "") + "\n当前未保存内容会保留为本机草稿。") }
+            } message: { Text((missingLink ?? "") + "\n当前修改会先保存到文件。") }
             .alert("提示", isPresented: Binding(get: { issue != nil }, set: { if !$0 { issue = nil } })) {
                 Button("好") { issue = nil }
             } message: { Text(issue ?? "") }
@@ -302,6 +296,7 @@ struct EditorView: View {
         #endif
     }
     private func closeEditor() {
+        saveTask?.cancel()
         if let onClose { onClose() } else { dismiss() }
     }
     private var noteSwitcher: some View {
@@ -388,8 +383,8 @@ struct EditorView: View {
         scrollLine = nil
         Task { await Task.yield(); scrollLine = target }
     }
-    private func switchNote(_ note: Note) { draftTask?.cancel(); resumedBase = nil; resumedWithoutBase = false; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件"; pendingLink = nil }
-    private func navigate(to note: Note) { if dirty { pendingLink = note; linkPrompt = true } else { switchNote(note) } }
+    private func switchNote(_ note: Note) { saveTask?.cancel(); richDocumentID = UUID(); autoSaveBlocked = false; isNew = !store.notes.contains { $0.path == note.path }; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件" }
+    private func navigate(to note: Note) { Task { if await saveIfNeeded() { switchNote(note) } } }
     private func openLink(_ target: String) {
         switch store.noteIndex.resolve(target, from: current.path) {
         case .found(let path): if let note = store.notes.first(where: { $0.path == path }) { navigate(to: note) }
@@ -402,63 +397,61 @@ struct EditorView: View {
         text = document.togglingTask(at: line)
     }
 
-    private func scheduleDraft() {
-        draftTask?.cancel()
-        guard dirty else { status = isNew ? "尚未保存到文件" : "已保存到文件"; return }
-        status = "正在保护本机草稿…"
-        let path = current.path, content = text, expected = draftExpected, newDraft = isNew, vault = store.vault
-        draftTask = Task {
+    private var needsSave: Bool { dirty || (isNew && !filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+    private func scheduleSave() {
+        saveTask?.cancel()
+        guard needsSave else { status = isNew ? "输入后自动保存" : "已保存到文件"; return }
+        guard !autoSaveBlocked else { return }
+        status = "等待保存…"
+        guard !composing else { return }
+        saveTask = Task {
             do {
-                try await Task.sleep(for: .milliseconds(450)); try Task.checkCancellation()
-                try await vault?.writeDraft(path: path, text: content, expected: expected, isNew: newDraft)
-                if !Task.isCancelled { status = "本机草稿 · 未写入文件" }
-                if automaticSave && !isNew && !autoSaveBlocked {
-                    try await Task.sleep(for: .seconds(2)); try Task.checkCancellation()
-                    guard !composing, text == content, current.path == path else { return }
-                    if !(await save()) { autoSaveBlocked = true }
-                }
-            } catch is CancellationError {} catch { issue = "草稿保存失败：" + error.localizedDescription }
+                try await Task.sleep(for: .milliseconds(450))
+                try Task.checkCancellation()
+                // The debounce task must not cancel the write it starts.
+                saveTask = nil
+                _ = await saveIfNeeded()
+            } catch is CancellationError {} catch { issue = error.localizedDescription }
         }
     }
-    private func persistDraft() async -> Bool {
-        draftTask?.cancel()
-        guard dirty else { return true }
-        do { try await store.vault?.writeDraft(path: current.path, text: text, expected: draftExpected, isNew: isNew); await store.refreshDrafts(); return true }
-        catch { issue = error.localizedDescription; return false }
+    private func saveIfNeeded() async -> Bool {
+        await richEditor.flush()
+        guard !saving, !composing else { return false }
+        guard needsSave else { return true }
+        guard await save() else { return false }
+        return !needsSave
     }
-    private func flushDraft() {
-        draftTask?.cancel()
-        guard dirty else { return }
-        let path = current.path, content = text, expected = draftExpected, newDraft = isNew, vault = store.vault
-        Task { do { try await vault?.writeDraft(path: path, text: content, expected: expected, isNew: newDraft) } catch { store.error = error.localizedDescription } }
+    private func flushSave() {
+        saveTask?.cancel()
+        guard !autoSaveBlocked else { return }
+        Task { await richEditor.flush(); guard needsSave, !composing else { return }; _ = await saveIfNeeded() }
     }
     private func save() async -> Bool {
-        guard !composing, let vault = store.vault else { return false }
-        saving = true; draftTask?.cancel(); defer { saving = false }
+        await richEditor.flush()
+        guard !saving, !composing, let vault = store.vault else { return false }
+        saving = true; saveTask?.cancel(); defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
         do {
             let saved: Note
             if isNew {
                 let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else { throw VaultError.invalidPath }
                 let path = (targetFolder.isEmpty ? "" : targetFolder + "/") + (name.isEmpty ? (current.path as NSString).lastPathComponent : name + (name.lowercased().hasSuffix(".md") ? "" : ".md"))
-                if path != current.path, try await vault.draft(path: path) != nil { throw VaultError.exists }
                 saved = try await vault.create(path: path, text: text)
-                try await vault.clearDraft(path: current.path)
                 isNew = false
             } else {
-                guard !resumedWithoutBase else { throw VaultError.conflict }
-                saved = try await vault.save(path: current.path, text: text, expected: resumedBase ?? current.text)
+                saved = try await vault.save(path: current.path, text: text, expected: current.text)
             }
-            await store.refresh(); current = saved; resumedBase = nil; resumedWithoutBase = false; autoSaveBlocked = false; status = "已保存到文件"; return true
-        } catch { issue = error.localizedDescription; return false }
+            await store.refresh(); current = saved; autoSaveBlocked = false; status = "已保存到文件"; return true
+        } catch { autoSaveBlocked = true; status = "保存失败 · 修改尚未写入文件"; issue = error.localizedDescription; return false }
     }
     private func saveCopy() async {
-        guard let vault = store.vault else { return }
-        saving = true; draftTask?.cancel(); defer { saving = false }
+        await richEditor.flush()
+        guard !saving, !composing, let vault = store.vault else { return }
+        saving = true; saveTask?.cancel(); defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
         do {
             let path = (current.path as NSString).deletingPathExtension + "-副本-" + UUID().uuidString.prefix(6) + ".md"
             let copy = try await vault.create(path: path, text: text)
-            await store.refresh(); current = copy; resumedBase = nil; resumedWithoutBase = false; isNew = false; status = "已保存到文件"
+            await store.refresh(); current = copy; isNew = false; autoSaveBlocked = false; status = "已保存到文件"
         } catch { issue = error.localizedDescription }
     }
     private func delete() async {

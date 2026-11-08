@@ -10,3 +10,8 @@ No GPUI or vendored desktop library code is included in this application.
 
 Markdown parsing uses Swift Markdown and swift-cmark. Their license notices are
 in Sources/InkstoneCore/Resources/ThirdPartyNotices.txt and bundled with InkstoneCore.
+
+Rich text editing uses ProseMirror, markdown-it and their dependencies, bundled
+offline in Sources/InkstoneCore/Resources/RichEditor. Dependency versions are
+locked in RichEditor/package-lock.json. Full license notices are reproduced in
+Sources/InkstoneCore/Resources/RichEditor/ThirdPartyNotices.txt.
