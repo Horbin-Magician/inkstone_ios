@@ -14,8 +14,6 @@ struct SettingsView: View {
     @State private var importPicker = false
     @AppStorage("readingSize") private var readingSize = 17.0
     @AppStorage("readingSpacing") private var readingSpacing = 5.0
-    @AppStorage("dailyFolder") private var dailyFolder = "日记"
-    @AppStorage("dailyTemplate") private var dailyTemplate = "# {{date}}\n\n## 此刻的想法\n\n## 今天想做\n\n- [ ] \n"
     var body: some View {
         Form {
             Section {
@@ -77,11 +75,6 @@ struct SettingsView: View {
                 LabeledContent("字体大小", value: "\(Int(readingSize)) pt")
                 Slider(value: $readingSpacing, in: 0...16, step: 1) { Text("行距") }
                 LabeledContent("附加行距", value: "\(Int(readingSpacing)) pt")
-            }
-            Section("今日笔记") {
-                TextField("默认目录（留空为根目录）", text: $dailyFolder)
-                TextEditor(text: $dailyTemplate).frame(minHeight: 140).accessibilityLabel("今日笔记模板")
-                Text("使用 {{date}} 插入日期。已创建的今日笔记不会被模板覆盖。").font(.caption)
             }
             Section("备份与保留") {
                 LabeledContent("笔记数量", value: "\(store.notes.count)")

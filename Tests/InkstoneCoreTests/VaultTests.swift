@@ -12,6 +12,44 @@ final class VaultTests {
         vault = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
     }
     deinit { try? FileManager.default.removeItem(at: base) }
+    @Test func folderDeletionPreservesNotesAttachmentsAndSiblingFolders() async throws {
+        _ = try await vault.create(path: "folder/nested/a.md", text: "正文")
+        _ = try await vault.create(path: "folder-other/keep.md", text: "keep")
+        let attachment = try await vault.insertAttachment(Data([0, 255, 2]), extension: "png", from: "folder/nested/a.md")
+        try await vault.trashFolder(path: "folder")
+        let snapshot = try await vault.scan()
+        #expect(snapshot.notes.map(\.path) == ["folder-other/keep.md"])
+        #expect(!snapshot.folders.contains("folder"))
+        let records = try await vault.records()
+        #expect(records.count == 1)
+        #expect(records.first?.path == "folder/nested/a.md")
+        #expect(records.first?.text == "正文")
+        let backups = base.appendingPathComponent("recovery/.deleted-folders")
+        let backup = try #require(FileManager.default.contentsOfDirectory(at: backups, includingPropertiesForKeys: nil).first)
+        #expect(try Data(contentsOf: backup.appendingPathComponent("folder/nested/" + attachment)) == Data([0, 255, 2]))
+        _ = try await vault.restoreCopy(try #require(records.first))
+        #expect(try await vault.scan().notes.contains { $0.text == "正文" })
+    }
+    @Test func folderDeletionHandlesEmptyFoldersAndRejectsUnsafeTargets() async throws {
+        try await vault.createFolder(path: "empty")
+        try await vault.trashFolder(path: "empty")
+        #expect(try await vault.scan().folders.isEmpty)
+        _ = try await vault.create(path: "a.md", text: "keep")
+        for path in ["", "../outside", "/", "a.md"] {
+            do { try await vault.trashFolder(path: path); Issue.record("Unsafe folder deletion accepted") }
+            catch VaultError.invalidPath {}
+        }
+        #expect(try await vault.scan().notes.count == 1)
+    }
+    @Test func folderDeletionPreservesSourceWhenRecoveryCannotBeCreated() async throws {
+        _ = try await vault.create(path: "folder/a.md", text: "keep")
+        try Data([0xff]).write(to: root.appendingPathComponent("folder/bad.md"))
+        do { try await vault.trashFolder(path: "folder"); Issue.record("Expected invalid UTF-8") }
+        catch VaultError.invalidUTF8 {}
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("folder/a.md").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("folder/bad.md").path))
+        #expect(try await vault.records().isEmpty)
+    }
     @Test func archivePreservesUnicodeAndBinaryFiles() async throws {
         _ = try await vault.create(path: "中文/笔记.md", text: "正文👩‍💻")
         let image = try await vault.insertAttachment(Data([0, 255, 1, 2]), extension: "png", from: "中文/笔记.md")

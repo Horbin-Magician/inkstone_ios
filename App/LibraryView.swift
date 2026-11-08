@@ -22,6 +22,7 @@ struct LibraryView: View {
     @State private var folderName = ""
     @State private var moving: String?
     @State private var deleting: Note?
+    @State private var deletingFolder: String?
     @State private var selecting = false
     @State private var selectedPaths: Set<String> = []
     @State private var batchDelete = false
@@ -35,9 +36,9 @@ struct LibraryView: View {
     private var searchRequest: SearchRequest { SearchRequest(query: query, revision: store.notesRevision) }
     private var searching: Bool { !query.isEmpty && completedSearch != searchRequest }
     private var libraryInteractionActive: Bool {
-        selecting || settings || recovery || importing || syncDetails || newFolder || moving != nil || deleting != nil || deleteInProgress
+        selecting || settings || recovery || importing || syncDetails || newFolder || moving != nil || deleting != nil || deletingFolder != nil || deleteInProgress
     }
-    var body: some View {
+    private var libraryContent: some View {
         GeometryReader { proxy in
             Group {
                 if wideLayout {
@@ -48,6 +49,8 @@ struct LibraryView: View {
                             Button("根目录") { scope = .folders; store.currentFolder = "" }
                             ForEach(store.folders, id: \.self) { folder in
                                 Button { scope = .folders; store.currentFolder = folder } label: { Label(folder, systemImage: "folder") }
+                                    .contextMenu { folderActions(folder) }
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) { folderActions(folder) }
                             }
                         }.navigationTitle("笔记库")
                     } content: { library } detail: {
@@ -98,6 +101,9 @@ struct LibraryView: View {
         .sheet(isPresented: Binding(get: { moving != nil }, set: { if !$0 { moving = nil; selectedPaths.formIntersection(store.browsableNotes.map(\.path)) } })) {
             if let path = moving { FileLocationView(path: path, rename: renaming, movePaths: path == "__batch__" ? selectedPaths.sorted() : []).environmentObject(store) }
         }
+    }
+    private var deletionContent: some View {
+        libraryContent
         .confirmationDialog("删除选中的 \(selectedPaths.count) 篇笔记？", isPresented: $batchDelete, titleVisibility: .visible) {
             Button("删除并保留恢复记录", role: .destructive) { Task {
                 deleteInProgress = true; defer { deleteInProgress = false }
@@ -125,6 +131,27 @@ struct LibraryView: View {
         } message: { note in
             Text("将删除「\(note.title)」。删除前会保留本机恢复记录；共享文件夹中的删除可能同步到其他设备。")
         }
+        .confirmationDialog("删除文件夹？", isPresented: Binding(
+            get: { deletingFolder != nil },
+            set: { if !$0 { deletingFolder = nil } }
+        ), titleVisibility: .visible, presenting: deletingFolder) { folder in
+            Button("删除文件夹及其内容", role: .destructive) {
+                deleteInProgress = true
+                Task {
+                    defer { deleteInProgress = false }
+                    do {
+                        try await store.deleteFolder(folder)
+                        selectedPaths.formIntersection(store.browsableNotes.map(\.path))
+                    } catch { store.error = error.localizedDescription }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: { folder in
+            Text("将删除「\(folder)」及其中的所有笔记、子文件夹和附件。笔记会保留本机恢复记录，文件夹内容会保留本机备份；共享文件夹中的删除可能同步到其他设备。")
+        }
+    }
+    var body: some View {
+        deletionContent
         .alert("提示", isPresented: Binding(get: { !settings && store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -185,17 +212,15 @@ struct LibraryView: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }.frame(minHeight: 36).contentShape(Rectangle())
                     }.buttonStyle(.plain)
-                    .contextMenu {
-                        Button("移动到") { renaming = false; moving = folder }
-                        Button("重命名") { renaming = true; moving = folder }
-                    }
+                    .contextMenu { folderActions(folder) }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) { folderActions(folder) }
                 }
             }
             if !searching {
                 ForEach(visibleNotes) { note in
                     noteButton(note)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            // Trailing actions are laid out from the outer edge inward.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            // Keep delete first so a full swipe opens the deletion confirmation.
                             deleteButton(note).tint(.red)
                             Button { store.toggleFavorite(note.path) } label: {
                                 Label(store.favorites.contains(note.path) ? "移除书签" : "书签", systemImage: "bookmark")
@@ -301,8 +326,6 @@ struct LibraryView: View {
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { showSearch = true } label: { Image(systemName: "magnifyingglass") }.accessibilityLabel("搜索笔记")
-                Button { Task { await store.dailyNote() } } label: { Image(systemName: "calendar") }
-                    .accessibilityLabel("今日笔记").disabled(store.loading || store.syncing)
                 Button { store.beginNote() } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel("新建笔记").keyboardShortcut("n").disabled(store.loading || store.syncing)
             }
@@ -360,6 +383,18 @@ struct LibraryView: View {
             }
         }
         return result
+    }
+    @ViewBuilder
+    private func folderActions(_ folder: String) -> some View {
+        Button(role: .destructive) { deletingFolder = folder } label: {
+            Label("删除", systemImage: "trash")
+        }.tint(.red).disabled(store.selected != nil || store.syncing)
+        Button { renaming = true; moving = folder } label: {
+            Label("重命名", systemImage: "pencil")
+        }.tint(InkTheme.accent)
+        Button { renaming = false; moving = folder } label: {
+            Label("移动到", systemImage: "folder")
+        }
     }
     private func deleteButton(_ note: Note) -> some View {
         Button(role: .destructive) { deleting = note } label: {

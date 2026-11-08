@@ -261,31 +261,21 @@ final class LibraryStore: ObservableObject {
         defaults.set(Array(favorites), forKey: favoriteKey)
         await refresh()
     }
+    func deleteFolder(_ path: String) async throws {
+        guard selected == nil else { throw VaultError.editorOpen }
+        guard !syncing, let vault else { throw VaultError.busy }
+        mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
+        try await vault.trashFolder(path: path)
+        favorites = favorites.filter { !$0.hasPrefix(path + "/") }
+        defaults.set(Array(favorites), forKey: favoriteKey)
+        if currentFolder == path || currentFolder.hasPrefix(path + "/") {
+            currentFolder = (path as NSString).deletingLastPathComponent
+        }
+        await refresh()
+    }
     func toggleFavorite(_ path: String) {
         if favorites.contains(path) { favorites.remove(path) } else { favorites.insert(path) }
         defaults.set(Array(favorites), forKey: favoriteKey)
-    }
-    func create(_ title: String, body: String? = nil) async {
-        guard !syncing else { error = VaultError.busy.localizedDescription; return }
-        mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
-        guard let vault else { return }
-        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { error = "请输入笔记名称。"; return }
-        do {
-            let path = title.lowercased().hasSuffix(".md") ? title : title + ".md"
-            let note = try await vault.create(path: path, text: body ?? "# \((path as NSString).lastPathComponent.replacingOccurrences(of: ".md", with: ""))\n\n")
-            await refresh(); openNote(note)
-        } catch { self.error = error.localizedDescription }
-    }
-    func dailyNote() async {
-        searchTerm = ""
-        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd"; formatter.locale = Locale(identifier: "en_US_POSIX")
-        let day = formatter.string(from: Date())
-        guard !syncing else { return }
-        let directory = UserDefaults.standard.string(forKey: "dailyFolder") ?? "日记"
-        let path = (directory.isEmpty ? "" : directory + "/") + day + ".md"
-        if let note = notes.first(where: { $0.path == path }) { openNote(note) }
-        else { await create(path, body: (UserDefaults.standard.string(forKey: "dailyTemplate") ?? "# {{date}}\n\n## 此刻的想法\n\n## 今天想做\n\n- [ ] \n").replacingOccurrences(of: "{{date}}", with: day)) }
     }
     func loadRecovery(path: String? = nil) async {
         do { records = try await vault?.records(path: path) ?? [] }

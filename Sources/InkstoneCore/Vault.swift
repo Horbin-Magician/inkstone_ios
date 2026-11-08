@@ -172,6 +172,39 @@ public actor Vault {
             try fm.removeItem(at: file)
         }
     }
+    public func trashFolder(path: String) throws {
+        try requireIdle()
+        let target = try fileURL(path)
+        try coordinated(target, writing: true) { folder in
+            guard try folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+                throw VaultError.invalidPath
+            }
+            // Keep every file, including attachments and hidden files. Hidden backups
+            // are excluded from the recovery-record enumerator.
+            let backup = recovery.appendingPathComponent(".deleted-folders")
+                .appendingPathComponent(UUID().uuidString).appendingPathComponent(path)
+            try fm.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.copyItem(at: folder, to: backup)
+            var entries: [RecoveryRecord] = []
+            var enumerationError: Error?
+            guard let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { _, error in
+                enumerationError = error; return false
+            }) else { throw CocoaError(.fileReadUnknown) }
+            for case let file as URL in walker {
+                let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                if values.isSymbolicLink == true { walker.skipDescendants(); continue }
+                guard values.isRegularFile == true, file.pathExtension.lowercased() == "md" else { continue }
+                let folderPath = folder.standardizedFileURL.resolvingSymlinksInPath().path
+                let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
+                let relative = path + "/" + filePath.dropFirst(folderPath.count + 1)
+                entries.append(RecoveryRecord(path: relative, text: try read(file), kind: "已删除"))
+            }
+            if let enumerationError { throw enumerationError }
+            // Finish all recovery writes before removing any source content.
+            for entry in entries { try record(entry) }
+            try fm.removeItem(at: folder)
+        }
+    }
     public func createFolder(path: String) throws {
         try requireIdle()
         let target = try fileURL(path)
