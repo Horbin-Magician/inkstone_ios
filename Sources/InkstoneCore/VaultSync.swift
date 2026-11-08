@@ -1,6 +1,7 @@
 import Foundation
 
 public struct SyncReport: Sendable {
+    public var changed = false
     public var uploaded = 0
     public var downloaded = 0
     public var deleted = 0
@@ -30,8 +31,12 @@ extension Vault {
             guard values.isRegularFile == true else { continue }
             let path = String(url.standardizedFileURL.resolvingSymlinksInPath().path.dropFirst(root.path.count + 1))
             let checked = try fileURL(path)
-            let data = try coordinated(checked, writing: false) { try Self.bytes($0) }
-            let hash = digest(data)
+            let hash = try coordinated(checked, writing: false) { file in
+                let attributes = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard attributes.isRegularFile == true, attributes.isSymbolicLink != true else { throw VaultError.invalidPath }
+                guard (attributes.fileSize ?? 0) <= 128 * 1024 * 1024 else { throw SyncFailure("单个同步文件超过 128 MiB。") }
+                return try digestFile(file)
+            }
             files[path] = hash
         }
         if let scanError { throw scanError }
@@ -54,6 +59,7 @@ extension Vault {
         // A confirmed publish can finish after a process interruption without reinterpreting
         // partially applied downloads as local deletions. Concurrent local edits are retained.
         if fm.fileExists(atPath: pending.path) {
+            report.changed = true
             let transaction = try JSONDecoder().decode(PendingSync.self, from: Data(contentsOf: pending))
             try transaction.target.validate()
             try apply(transaction, objects: objects, state: state, report: &report)
@@ -78,6 +84,7 @@ extension Vault {
             try? fm.removeItem(at: objects)
             return report
         }
+        report.changed = true
         let uploads = Set(target.files.values).subtracting(remoteManifest.files.values)
         let installs = Set(target.files.compactMap { path, hash in local[path] == hash ? nil : hash })
         let needed = uploads.union(installs)
@@ -155,7 +162,7 @@ extension Vault {
                     try Data(path.utf8).write(to: backup.appendingPathComponent("path.txt"), options: .atomic)
                     if path.lowercased().hasSuffix(".md"), let text = String(data: old, encoding: .utf8) {
                         let record = RecoveryRecord(path: path, text: text, kind: "同步前版本")
-                        try JSONEncoder().encode(record).write(to: recovery.appendingPathComponent(record.id.uuidString + ".json"), options: .atomic)
+                        try self.record(record)
                     }
                 }
                 if let hash = target[path] {

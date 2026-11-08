@@ -22,6 +22,7 @@ final class LibraryStore: ObservableObject {
     private var savedSyncSettings: WebDAVSettings?
     private var savedSyncPassword = ""
     private var mutationsInProgress = 0
+    private var batchDepth = 0
     @Published var notes: [Note] = []
     private(set) var noteIndex = NoteIndex(notes: [])
     private(set) var notesRevision = 0
@@ -32,7 +33,7 @@ final class LibraryStore: ObservableObject {
     @Published var favorites: Set<String> = []
     @Published var selected: Note?
     @Published var requestedNote: Note?
-    @Published var records: [RecoveryRecord] = []
+    @Published var records: [RecoverySummary] = []
     @Published var external = false
     private(set) var vault: Vault?
     private var scopedURL: URL?
@@ -126,7 +127,7 @@ final class LibraryStore: ObservableObject {
         }
     }
     func refresh(reportErrors: Bool = true) async {
-        guard let vault, !loading else { return }
+        guard let vault, !loading, batchDepth == 0 else { return }
         loading = true; defer { loading = false }
         do { let result = try await vault.scan(); apply(result)
             if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" } }
@@ -134,6 +135,10 @@ final class LibraryStore: ObservableObject {
             if reportErrors { self.error = error.localizedDescription }
             else { syncIssue = error.localizedDescription }
         }
+    }
+    func acceptSaved(_ note: Note) async {
+        guard let vault else { return }
+        apply(await vault.snapshotAfterSaving(note))
     }
     private func apply(_ snapshot: VaultSnapshot) {
         noteIndex = snapshot.index
@@ -195,7 +200,7 @@ final class LibraryStore: ObservableObject {
                 if !report.conflicts.isEmpty { syncStatus += "；保留 \(report.conflicts.count) 处冲突，请核对笔记" }
                 syncStatus += " · " + Date().formatted(date: .abbreviated, time: .shortened)
                 defaults.set(syncStatus, forKey: syncKey + ".status")
-                autoSyncSchedule.completed(success: true)
+                autoSyncSchedule.completed(success: true, changed: report.changed)
                 pendingSync = false; lastSync = Date()
                 syncConflicts = report.conflicts
                 defaults.set(syncConflicts, forKey: syncKey + ".conflicts")
@@ -240,6 +245,19 @@ final class LibraryStore: ObservableObject {
             await refresh()
         } catch { self.error = error.localizedDescription }
     }
+    /// Keep sync paused and refresh once, including after a partially successful batch.
+    func batchChanges(_ operation: () async throws -> Void) async rethrows {
+        mutationsInProgress += 1; batchDepth += 1
+        defer { mutationsInProgress -= 1 }
+        do { try await operation() }
+        catch {
+            batchDepth -= 1
+            if batchDepth == 0 { await refresh() }
+            throw error
+        }
+        batchDepth -= 1
+        if batchDepth == 0 { await refresh() }
+    }
     func move(_ path: String, to destination: String) async {
         guard selected == nil else { error = VaultError.editorOpen.localizedDescription; return }
         guard !syncing else { error = VaultError.busy.localizedDescription; return }
@@ -278,7 +296,7 @@ final class LibraryStore: ObservableObject {
         defaults.set(Array(favorites), forKey: favoriteKey)
     }
     func loadRecovery(path: String? = nil) async {
-        do { records = try await vault?.records(path: path) ?? [] }
+        do { records = try await vault?.recoverySummaries(path: path) ?? [] }
         catch { self.error = error.localizedDescription }
     }
     func restore(_ record: RecoveryRecord) async -> Note? {

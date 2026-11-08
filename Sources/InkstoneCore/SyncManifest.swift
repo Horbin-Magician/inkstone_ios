@@ -8,6 +8,20 @@ public struct SyncFailure: LocalizedError {
 }
 func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
+/// Hash every byte, with bounded memory; timestamps are never trusted as content identity.
+func digestFile(_ url: URL, limit: Int = 128 * 1024 * 1024) throws -> String {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hash = SHA256(), count = 0
+    while let chunk = try handle.read(upToCount: 256 * 1024), !chunk.isEmpty {
+        try Task.checkCancellation()
+        count += chunk.count
+        guard count <= limit else { throw SyncFailure("单个同步文件超过 128 MiB。") }
+        hash.update(data: chunk)
+    }
+    return hash.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
 struct SyncManifest: Codable, Equatable {
     var version = 1
     var files: [String: String] = [:]

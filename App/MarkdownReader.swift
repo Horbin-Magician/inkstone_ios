@@ -205,24 +205,31 @@ private struct LocalMarkdownImage: View {
     @Environment(\.attachmentLoader) private var loader
     let source: String
     let alt: String
-    @State private var data: Data?
+    @Environment(\.displayScale) private var displayScale
+    @State private var thumbnail: CGImage?
     @State private var failed = false
+    private struct Request: Equatable { let source: String; let scale: CGFloat }
     var body: some View {
         Group {
-            #if os(iOS)
-            if let data, let image = UIImage(data: data) {
-                Image(uiImage: image).resizable().scaledToFit().accessibilityLabel(alt.isEmpty ? "图片" : alt)
+            if let thumbnail {
+                Image(decorative: thumbnail, scale: displayScale).resizable().scaledToFit()
+                    .accessibilityLabel(alt.isEmpty ? "图片" : alt)
             } else { placeholder }
-            #else
-            if let data, let image = NSImage(data: data) {
-                Image(nsImage: image).resizable().scaledToFit().accessibilityLabel(alt.isEmpty ? "图片" : alt)
-            } else { placeholder }
-            #endif
         }.frame(maxWidth: 640)
-        .task(id: source) {
-            data = nil; failed = false
-            do { data = try await loader?(source); failed = data == nil }
-            catch { failed = true }
+        .task(id: Request(source: source, scale: displayScale)) {
+            thumbnail = nil; failed = false
+            do {
+                guard let data = try await loader?(source) else { failed = true; return }
+                try Task.checkCancellation()
+                let pixels = Int(640 * displayScale)
+                let worker = Task.detached(priority: .userInitiated) {
+                    guard !Task.isCancelled else { return nil as CGImage? }
+                    return AttachmentThumbnail.make(data: data, maxPixelSize: pixels)
+                }
+                let image = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                thumbnail = image; failed = image == nil
+            } catch is CancellationError {} catch { failed = true }
         }
     }
     private var placeholder: some View {

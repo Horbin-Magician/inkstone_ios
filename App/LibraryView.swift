@@ -106,10 +106,13 @@ struct LibraryView: View {
             Button("删除并保留恢复记录", role: .destructive) { Task {
                 deleteInProgress = true; defer { deleteInProgress = false }
                 let targets = store.browsableNotes.filter { selectedPaths.contains($0.path) }
-                for note in targets {
-                    do { try await store.deleteNote(note); selectedPaths.remove(note.path) }
-                    catch { store.error = "部分笔记未删除：" + error.localizedDescription; return }
-                }
+                do {
+                    try await store.batchChanges {
+                        for note in targets {
+                            try await store.deleteNote(note); selectedPaths.remove(note.path)
+                        }
+                    }
+                } catch { store.error = "部分笔记未删除：" + error.localizedDescription; return }
                 selecting = false
             } }
         }
@@ -168,12 +171,7 @@ struct LibraryView: View {
             guard !request.query.isEmpty else { searchResults = []; completedSearch = nil; return }
             do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
             let notes = store.browsableNotes
-            let worker = Task.detached(priority: .userInitiated) {
-                NoteIndex.search(notes, query: request.query)
-            }
-            let results = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: { worker.cancel() }
+            let results = await NoteIndex.searchConcurrently(notes, query: request.query, alreadySorted: true)
             guard !Task.isCancelled else { return }
             searchResults = results; completedSearch = request
         }
@@ -481,10 +479,12 @@ struct FileLocationView: View {
                         store.error = nil
                         if movePaths.isEmpty { await store.move(path, to: target) }
                         else {
-                            for source in movePaths {
-                                let destination = (folder.isEmpty ? "" : folder + "/") + (source as NSString).lastPathComponent
-                                if source != destination { await store.move(source, to: destination) }
-                                if store.error != nil { break }
+                            await store.batchChanges {
+                                for source in movePaths {
+                                    let destination = (folder.isEmpty ? "" : folder + "/") + (source as NSString).lastPathComponent
+                                    if source != destination { await store.move(source, to: destination) }
+                                    if store.error != nil { break }
+                                }
                             }
                         }
                         if let error = store.error { issue = error; store.error = nil } else { dismiss() }

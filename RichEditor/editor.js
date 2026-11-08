@@ -8,6 +8,7 @@ import {tableEditing, goToNextCell, addRowAfter, deleteRow, addColumnAfter, dele
 import {schema, loadMarkdown, saveMarkdown} from './model.js';
 
 let loaded, view, session, revision = 0, lastSource, imageBookmark, composition = false;
+let publishTimer, serializedRevision = -1, serializedText;
 const post = value => window.webkit?.messageHandlers.richEditor.postMessage({...value, session});
 const editor = document.querySelector('#editor');
 const toolbar = document.querySelector('#toolbar');
@@ -15,9 +16,19 @@ const status = document.querySelector('#status');
 const buttons = new Map();
 
 function snapshot() {
-  return {text: saveMarkdown(view.state.doc, loaded), composing: composition || view.composing, revision, session};
+  if (serializedRevision !== revision) {
+    serializedText = saveMarkdown(view.state.doc, loaded);
+    serializedRevision = revision;
+  }
+  return {text: serializedText, composing: composition || view.composing, revision, session};
+}
+function schedulePublish() {
+  // Bound latency during continuous typing while coalescing bursts of transactions.
+  if (publishTimer == null) publishTimer = setTimeout(publish, 50);
+  updateToolbar();
 }
 function publish() {
+  clearTimeout(publishTimer); publishTimer = null;
   if (!view) return;
   const value = snapshot();
   lastSource = value.text;
@@ -173,6 +184,7 @@ function itemView(node, editorView, getPos) {
 }
 
 function initialize(source, token) {
+  clearTimeout(publishTimer); publishTimer = null; serializedRevision = -1;
   try {
     loaded = loadMarkdown(source); revision = token === session ? revision + 1 : 0;
     session = token; lastSource = source; composition = false; imageBookmark = null;
@@ -198,7 +210,7 @@ function initialize(source, token) {
         if (imageBookmark) imageBookmark = imageBookmark.map(tr.mapping);
         const result = view.state.applyTransaction(tr);
         view.updateState(result.state);
-        if (result.transactions.some(transaction => transaction.docChanged)) { revision++; publish(); }
+        if (result.transactions.some(transaction => transaction.docChanged)) { revision++; schedulePublish(); }
         else updateToolbar();
       },
       handlePaste(editorView, event) {

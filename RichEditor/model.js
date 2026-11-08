@@ -150,22 +150,31 @@ export function loadMarkdown(source) {
   return {doc, originals, source, prefix, newline: source.includes('\r\n') ? '\r\n' : source.includes('\r') && !source.includes('\n') ? '\r' : '\n'};
 }
 
+const serializedBlocks = new WeakMap();
+
 export function saveMarkdown(doc, loaded) {
   if (doc.eq(loaded.doc)) return loaded.source;
-  let result = loaded.prefix;
+  let cache = serializedBlocks.get(loaded);
+  if (!cache) { cache = new WeakMap(); serializedBlocks.set(loaded, cache); }
+  const parts = [loaded.prefix];
+  let tail = loaded.prefix.slice(-4), hasContent = loaded.prefix.length > 0;
   doc.forEach((node, _, index) => {
     const original = loaded.originals.get(node.attrs.origin);
-    let part;
-    if (original && node.eq(original.node)) part = original.source;
-    else {
-      part = serializer.serialize(schema.nodes.doc.create(null, node)).replace(/\n/g, loaded.newline);
-      part += original?.tail || '';
+    let part = cache.get(node);
+    if (part === undefined) {
+      if (original && node.eq(original.node)) part = original.source;
+      else {
+        part = serializer.serialize(schema.nodes.doc.create(null, node)).replace(/\n/g, loaded.newline);
+        part += original?.tail || '';
+      }
+      cache.set(node, part);
     }
     // A removed/inserted paragraph still needs a block boundary.
-    if (index && result && part && !/(?:\r\n|\n|\r){2}$/.test(result)) {
-      result += /[\r\n]$/.test(result) ? loaded.newline : loaded.newline + loaded.newline;
+    if (index && hasContent && part && !tail.replace(/\r\n/g, '\n').replace(/\r/g, '\n').endsWith('\n\n')) {
+      part = (/[\r\n]$/.test(tail) ? loaded.newline : loaded.newline + loaded.newline) + part;
     }
-    result += part;
+    parts.push(part);
+    if (part) { tail = (tail + part.slice(-4)).slice(-4); hasContent = true; }
   });
-  return result;
+  return parts.join('');
 }

@@ -41,6 +41,7 @@ struct EditorView: View {
     @State private var switchQuery = ""
     @State private var switchSelection: Note?
     @State private var saving = false
+    @State private var historySession = UUID()
     @State private var saveTask: Task<Void, Never>?
     @State private var status = "已保存到文件"
     @State private var issue: String?
@@ -383,7 +384,7 @@ struct EditorView: View {
         scrollLine = nil
         Task { await Task.yield(); scrollLine = target }
     }
-    private func switchNote(_ note: Note) { saveTask?.cancel(); richDocumentID = UUID(); autoSaveBlocked = false; isNew = !store.notes.contains { $0.path == note.path }; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件" }
+    private func switchNote(_ note: Note) { historySession = UUID(); saveTask?.cancel(); richDocumentID = UUID(); autoSaveBlocked = false; isNew = !store.notes.contains { $0.path == note.path }; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件" }
     private func navigate(to note: Note) { Task { if await saveIfNeeded() { switchNote(note) } } }
     private func openLink(_ target: String) {
         switch store.noteIndex.resolve(target, from: current.path) {
@@ -439,9 +440,9 @@ struct EditorView: View {
                 saved = try await vault.create(path: path, text: text)
                 isNew = false
             } else {
-                saved = try await vault.save(path: current.path, text: text, expected: current.text)
+                saved = try await vault.save(path: current.path, text: text, expected: current.text, historySession: historySession)
             }
-            await store.refresh(); current = saved; autoSaveBlocked = false; status = "已保存到文件"; return true
+            await store.acceptSaved(saved); current = saved; autoSaveBlocked = false; status = "已保存到文件"; return true
         } catch { autoSaveBlocked = true; status = "保存失败 · 修改尚未写入文件"; issue = error.localizedDescription; return false }
     }
     private func saveCopy() async {
@@ -451,7 +452,7 @@ struct EditorView: View {
         do {
             let path = (current.path as NSString).deletingPathExtension + "-副本-" + UUID().uuidString.prefix(6) + ".md"
             let copy = try await vault.create(path: path, text: text)
-            await store.refresh(); current = copy; isNew = false; autoSaveBlocked = false; status = "已保存到文件"
+            await store.acceptSaved(copy); historySession = UUID(); current = copy; isNew = false; autoSaveBlocked = false; status = "已保存到文件"
         } catch { issue = error.localizedDescription }
     }
     private func delete() async {

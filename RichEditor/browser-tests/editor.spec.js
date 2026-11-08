@@ -114,3 +114,20 @@ test('mobile layout shows rendered content without horizontal document overflow'
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({path: '/tmp/inkstone-rich-editor-mobile.png', fullPage: true});
 });
+
+
+test('batched edits flush immediately and cannot leak into another document', async ({page}) => {
+  await load(page, '');
+  await page.evaluate(() => {
+    window.changes = [];
+    window.webkit = {messageHandlers: {richEditor: {postMessage: message => changes.push(message)}}};
+    inkstone.select(1); inkstone.focus(true);
+    for (let i = 0; i < 20; i++) document.execCommand('insertText', false, '字');
+  });
+  expect(await markdown(page)).toBe('字'.repeat(20));
+  expect(await page.evaluate(() => changes.filter(m => m.type === 'change').length)).toBeLessThan(20);
+  await page.evaluate(() => inkstone.load('新文档', 'new-session'));
+  await page.waitForTimeout(100);
+  expect(await markdown(page)).toBe('新文档');
+  expect(await page.evaluate(() => changes.at(-1).session)).toBe('new-session');
+});

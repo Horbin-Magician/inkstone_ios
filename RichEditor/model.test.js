@@ -62,3 +62,25 @@ test('literal Markdown punctuation typed into rich text is escaped', () => {
   assert.equal(restored.firstChild.type.name, 'paragraph');
   assert.equal(restored.textContent, doc.textContent);
 });
+
+test('serialization caches immutable blocks and keeps separators correct after reorder', () => {
+  const loaded = loadMarkdown('first\r\n\r\nsecond\r\n\r\nthird\r\n');
+  const nodes = [];
+  loaded.doc.forEach(node => nodes.push(node.type.create(node.attrs, schema.text(node.textContent + ' changed'))));
+  const serialize = serializer.serialize;
+  let calls = 0;
+  serializer.serialize = function(...args) { calls++; return serialize.apply(this, args); };
+  try {
+    const doc = schema.nodes.doc.create(null, nodes);
+    const output = saveMarkdown(doc, loaded);
+    assert.equal(calls, 3);
+    assert.equal(saveMarkdown(doc, loaded), output);
+    assert.equal(calls, 3);
+    nodes[0] = nodes[0].type.create(nodes[0].attrs, schema.text('new'));
+    const edited = schema.nodes.doc.create(null, [nodes[2], nodes[0], nodes[1]]);
+    const result = saveMarkdown(edited, loaded);
+    assert.equal(calls, 4);
+    assert.match(result, /^third changed\r\n\r\nnew\r\n\r\nsecond changed/);
+    assert.equal(saveMarkdown(loaded.doc, loaded), loaded.source);
+  } finally { serializer.serialize = serialize; }
+});

@@ -101,6 +101,7 @@ struct SettingsView: View {
             Section { Text("Inkstone Mobile  ·  0.1.0").font(.footnote).foregroundStyle(.secondary) }
         }.navigationTitle("设置")
         .fileExporter(isPresented: $exporting, document: backup, contentType: .zip, defaultFilename: "墨砚备份.zip") { result in
+            backup = nil
             if case .failure(let error) = result { store.error = error.localizedDescription }
         }
         .confirmationDialog("清理 \(recoveryDays) 天前的历史和已删除记录？", isPresented: $prune, titleVisibility: .visible) {
@@ -143,11 +144,14 @@ struct RecoveryView: View {
                 }.pickerStyle(.segmented)
                 if store.records.filter({ $0.kind == kind }).isEmpty { ContentUnavailableView("暂无恢复记录", systemImage: "clock.arrow.circlepath", description: Text("保存前的版本和已删除笔记会显示在这里。")) }
                 ForEach(store.records.filter { $0.kind == kind }) { record in
-                    Button { preview = record } label: {
+                    Button { Task {
+                        do { preview = try await store.vault?.recoveryRecord(record) }
+                        catch { store.error = error.localizedDescription }
+                    } } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(record.path).font(.headline).foregroundStyle(.primary)
                             HStack { Text(record.kind); Text(record.date, style: .date); Text(record.date, style: .time) }.font(.caption).foregroundStyle(.secondary)
-                            Text(record.text.prefix(100)).lineLimit(2).font(.caption).foregroundStyle(.secondary)
+                            Text(record.excerpt).lineLimit(2).font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 6)
                     }
                 }

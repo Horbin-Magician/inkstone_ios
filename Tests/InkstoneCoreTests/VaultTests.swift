@@ -177,6 +177,34 @@ final class VaultTests {
         #expect(snapshot.notes.map(\.text) == [text])
         #expect(snapshot.notes.first?.path == "读书/笔记.md")
     }
+    @Test func incrementalSaveUpdatesLinksAndFoldersWithoutReadingOtherFiles() async throws {
+        _ = try await vault.create(path: "other.md", text: "original")
+        _ = try await vault.scan()
+        // A corrupt unrelated file must not be read by the save update.
+        try Data([0xff]).write(to: root.appendingPathComponent("other.md"))
+        let saved = try await vault.create(path: "new/nested/link.md", text: "[[other]]")
+        let snapshot = await vault.snapshotAfterSaving(saved)
+        #expect(snapshot.notes.count == 2)
+        #expect(snapshot.notes.first { $0.path == "other.md" }?.text == "original")
+        #expect(snapshot.folders == ["new", "new/nested"])
+        #expect(snapshot.index.backlinks(to: "other.md").map(\.path) == [saved.path])
+        let refreshed = try await vault.scan()
+        #expect(refreshed.notes.count == 1)
+        #expect(refreshed.warnings.count == 1)
+    }
+    @Test func editorHistoryCoalescesButProtectsSessionAndExternalBoundaries() async throws {
+        let session = UUID()
+        _ = try await vault.create(path: "a.md", text: "original")
+        _ = try await vault.save(path: "a.md", text: "one", expected: "original", historySession: session)
+        _ = try await vault.save(path: "a.md", text: "two", expected: "one", historySession: session)
+        #expect(try await vault.records().map(\.text) == ["original"])
+        _ = try await vault.save(path: "a.md", text: "three", expected: "two", historySession: UUID())
+        #expect(try await vault.records().count == 2)
+        try Data("external".utf8).write(to: root.appendingPathComponent("a.md"))
+        _ = try await vault.save(path: "a.md", text: "four", expected: "external", historySession: session)
+        #expect(try await vault.records().contains { $0.text == "external" })
+        #expect(try String(contentsOf: root.appendingPathComponent("a.md"), encoding: .utf8) == "four")
+    }
     @Test func testSaveCreatesHistory() async throws {
         _ = try await vault.create(path: "a.md", text: "before")
         _ = try await vault.save(path: "a.md", text: "after", expected: "before")

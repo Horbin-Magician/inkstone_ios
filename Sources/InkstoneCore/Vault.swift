@@ -50,11 +50,16 @@ public actor Vault {
             }
         }
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
-        self.recovery = recovery
+        self.recovery = recovery.standardizedFileURL.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
     }
     private var noteCache: [String: Note] = [:]
     private var cachedIndex = NoteIndex(notes: [])
+    private var cachedFolders: [String] = []
+    private var cachedNotes: [Note] = []
+    private var cachedWarnings: [String] = []
+    // Only explicit editor sessions coalesce history; other callers keep every version.
+    private var historyCheckpoint: (path: String, session: UUID, date: Date, text: String)?
     var syncing = false
     func requireIdle() throws { if syncing { throw VaultError.busy } }
     func fileURL(_ path: String) throws -> URL {
@@ -129,8 +134,30 @@ public actor Vault {
         }
         notes.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
         if nextCache != noteCache { cachedIndex = NoteIndex(notes: notes) }
-        noteCache = nextCache
+        noteCache = nextCache; cachedNotes = notes
+        cachedFolders = folders.sorted(); cachedWarnings = warnings
         return VaultSnapshot(notes: notes, warnings: warnings, folders: folders.sorted(), index: cachedIndex)
+    }
+    /// Update the known library after our own write, without reading unrelated files.
+    /// Explicit refresh / foreground scans still detect external edits, even unchanged timestamps.
+    public func snapshotAfterSaving(_ note: Note) -> VaultSnapshot {
+        noteCache[note.path] = note
+        var parent = note.folder
+        while !parent.isEmpty {
+            if !cachedFolders.contains(parent) { cachedFolders.append(parent) }
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        cachedFolders.sort()
+        cachedNotes.removeAll { $0.path == note.path }
+        var low = 0, high = cachedNotes.count
+        while low < high {
+            let middle = (low + high) / 2, candidate = cachedNotes[middle]
+            let comesFirst = candidate.modified == note.modified ? candidate.path < note.path : candidate.modified > note.modified
+            if comesFirst { low = middle + 1 } else { high = middle }
+        }
+        cachedNotes.insert(note, at: low)
+        if !cachedIndex.replaceExisting(note) { cachedIndex = NoteIndex(notes: cachedNotes) }
+        return VaultSnapshot(notes: cachedNotes, warnings: cachedWarnings, folders: cachedFolders, index: cachedIndex)
     }
     public func importFile(_ source: URL) throws -> Note {
         try requireIdle()
@@ -150,15 +177,23 @@ public actor Vault {
         }
         return Note(path: path, text: text)
     }
-    public func save(path: String, text: String, expected: String) throws -> Note {
+    public func save(path: String, text: String, expected: String, historySession: UUID? = nil) throws -> Note {
         try requireIdle()
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let target = try url(path)
         try coordinated(target, writing: true) { file in
             guard fm.fileExists(atPath: file.path), try read(file) == expected else { throw VaultError.conflict }
             if text != expected {
-                try record(RecoveryRecord(path: path, text: expected, kind: "历史版本"))
+                let now = Date()
+                let checkpoint = historyCheckpoint
+                let coalescing = historySession != nil && checkpoint?.session == historySession
+                    && checkpoint?.path == path && checkpoint?.text == expected
+                    && now.timeIntervalSince(checkpoint!.date) < 60
+                if !coalescing { try record(RecoveryRecord(path: path, text: expected, kind: "历史版本")) }
                 try Data(text.utf8).write(to: file, options: .atomic)
+                if let historySession {
+                    historyCheckpoint = (path, historySession, coalescing ? checkpoint!.date : now, text)
+                } else { historyCheckpoint = nil }
             }
         }
         return Note(path: path, text: text)
@@ -221,24 +256,26 @@ public actor Vault {
             try fm.moveItem(at: source, to: target)
         }
     }
-    private func record(_ entry: RecoveryRecord) throws {
+    func record(_ entry: RecoveryRecord) throws {
+        let file = recovery.appendingPathComponent(entry.id.uuidString + ".json")
+        // Index first: interruption may leave an ignored orphan, never an unindexed version.
+        try catalogRecord(entry, file: file)
         let data = try JSONEncoder().encode(entry)
-        try data.write(to: recovery.appendingPathComponent(entry.id.uuidString + ".json"), options: .atomic)
+        try data.write(to: file, options: .atomic)
     }
     /// Convert old private drafts into real files without overwriting the original.
     /// The record ID makes retries safe if the app exits after writing the copy.
     public func migrateLegacyDrafts() throws {
         try requireIdle()
-        guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return }
-        for case let file as URL in walker where file.pathExtension == "json" {
-            let entry = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
-            guard entry.kind == "恢复草稿" else { continue }
+        for summary in try recoverySummaries() where summary.kind == "恢复草稿" {
+            let entry = try recoveryRecord(summary)
+            let file = recovery.appendingPathComponent(summary.file)
             let path = (entry.path as NSString).deletingPathExtension + "-恢复-" + entry.id.uuidString + ".md"
             do { _ = try create(path: path, text: entry.text) }
             catch VaultError.exists {
                 guard try coordinated(try url(path), writing: false, { try read($0) }) == entry.text else { throw VaultError.conflict }
             }
-            try fm.removeItem(at: file)
+            try fm.removeItem(at: file); removeCatalogRecord(entry)
         }
     }
     public func records(path: String? = nil) throws -> [RecoveryRecord] {

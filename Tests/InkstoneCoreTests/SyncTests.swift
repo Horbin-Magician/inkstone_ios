@@ -169,10 +169,20 @@ final class SyncTests {
         let uploads = await remote.uploadCount
         let report = try await vault.synchronize(remote: remote)
         #expect(report.uploaded == 0 && report.downloaded == 0)
+        #expect(!report.changed)
         #expect(await remote.revision == revision)
         #expect(await remote.prepareCount == preparations)
         #expect(await remote.uploadCount == uploads)
         #expect(await remote.downloadCount == 0)
+    }
+    @Test func pathOnlySyncCountsAsActivityWithoutUploadingBytes() async throws {
+        let remote = MemoryRemote()
+        _ = try await vault.create(path: "a.md", text: "same")
+        _ = try await vault.synchronize(remote: remote)
+        try await vault.move(path: "a.md", to: "b.md")
+        let report = try await vault.synchronize(remote: remote)
+        #expect(report.changed)
+        #expect(report.uploaded == 0)
     }
     @Test func emptyFirstSyncCreatesManifest() async throws {
         let remote = MemoryRemote()

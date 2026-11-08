@@ -3,6 +3,37 @@ import Testing
 @testable import InkstoneCore
 
 final class IndexTests {
+    @Test func replacingExistingUpdatesOnlyItsLinksAndKeepsSnapshotsImmutable() {
+        let old = Note(path: "source.md", text: "[[a]] [[a|again]]", modified: .distantPast)
+        let a = Note(path: "a.md", text: ""), b = Note(path: "b.md", text: "")
+        var index = NoteIndex(notes: [old, a, b])
+        let previous = index
+        let edited = Note(path: "source.md", text: "[[b]] [[source]]")
+        let replaced = index.replaceExisting(edited)
+        #expect(replaced)
+        #expect(index.backlinks(to: "a.md").isEmpty)
+        #expect(index.backlinks(to: "b.md") == [edited])
+        #expect(index.backlinks(to: "source.md").isEmpty)
+        #expect(previous.backlinks(to: "a.md") == [old])
+        let inserted = index.replaceExisting(Note(path: "new.md", text: "[[a]]"))
+        #expect(!inserted)
+        #expect(index.resolve("new", from: "source.md") == .missing)
+    }
+    @Test func parallelSearchMatchesSerialUnicodeSemanticsAndOrdering() async {
+        let notes = (0..<1100).map { Note(path: "folder/\($0).md", text: $0.isMultiple(of: 2) ? "中文 café ＡＢＣ Straße 👩‍💻 é" : "another document", modified: Date(timeIntervalSince1970: Double($0 % 7))) }
+        for query in ["中文 cafe", "abc", "strasse", "é", "👩‍💻", "missing", "", " \n ", "folder 中文"] {
+            let serial = NoteIndex.search(notes, query: query)
+            #expect(await NoteIndex.searchConcurrently(notes, query: query) == serial)
+            let sorted = NoteIndex.search(notes, query: "")
+            #expect(await NoteIndex.searchConcurrently(sorted, query: query, alreadySorted: true) == serial)
+        }
+        let worker = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await NoteIndex.searchConcurrently(notes, query: "中文")
+        }
+        #expect(await worker.value.isEmpty)
+        #expect(await NoteIndex.searchConcurrently([], query: "test").isEmpty)
+    }
     @Test func reusableIndexPreservesResolutionAndDeduplicatesBacklinks() {
         let notes = [
             Note(path: "one/a.md", text: "[[a]]", modified: .distantPast),

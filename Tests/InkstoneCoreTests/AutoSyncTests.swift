@@ -5,6 +5,24 @@ import Testing
 struct AutoSyncTests {
     private let start = Date(timeIntervalSince1970: 1_000)
 
+    @Test func quietChecksBackOffButChangesAndForegroundResetPolling() {
+        var schedule = AutoSyncSchedule(now: start)
+        var now = start
+        for delay in [120.0, 240, 480, 600, 600] {
+            schedule.started(now: now)
+            schedule.completed(success: true, changed: false, now: now)
+            #expect(schedule.nextAttempt == now.addingTimeInterval(delay))
+            now = now.addingTimeInterval(delay)
+        }
+        schedule.requestForeground(now: now)
+        schedule.completed(success: true, changed: false, now: now)
+        #expect(schedule.nextAttempt == now.addingTimeInterval(120))
+        schedule.completed(success: true, changed: false, now: now)
+        schedule.requestChange(now: now)
+        #expect(schedule.nextAttempt == now.addingTimeInterval(3))
+        schedule.completed(success: true, changed: true, now: now)
+        #expect(schedule.nextAttempt == now.addingTimeInterval(120))
+    }
     @Test func burstsDebounceAndSuccessfulSyncWaitsForPeriodicCheck() {
         var schedule = AutoSyncSchedule(now: start)
         #expect(!schedule.isDue(now: start.addingTimeInterval(2)))

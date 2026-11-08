@@ -46,6 +46,7 @@ public struct NoteIndex: Sendable {
     private let paths: Set<String>
     private let filenames: [String: LinkResolution]
     private var incoming: [String: [Note]] = [:]
+    private var outgoing: [String: Set<String>] = [:]
 
     public init(notes: [Note]) {
         paths = Set(notes.map(\.path))
@@ -63,7 +64,28 @@ public struct NoteIndex: Sendable {
                     incoming[path, default: []].append(note)
                 }
             }
+            outgoing[note.path] = targets
         }
+    }
+
+    /// Existing paths cannot change filename ambiguity or other notes' link resolution.
+    /// New / removed paths must still rebuild the index.
+    @discardableResult public mutating func replaceExisting(_ note: Note) -> Bool {
+        guard paths.contains(note.path) else { return false }
+        for target in outgoing[note.path] ?? [] {
+            incoming[target]?.removeAll { $0.path == note.path }
+            if incoming[target]?.isEmpty == true { incoming.removeValue(forKey: target) }
+        }
+        var targets = Set<String>()
+        for link in note.metadata.links {
+            if case .found(let target) = resolve(link.target, from: note.path),
+               target != note.path, targets.insert(target).inserted {
+                incoming[target, default: []].append(note)
+                incoming[target]?.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+            }
+        }
+        outgoing[note.path] = targets
+        return true
     }
 
     public func backlinks(to path: String) -> [Note] { incoming[path] ?? [] }
@@ -76,6 +98,35 @@ public struct NoteIndex: Sendable {
                 note.path.localizedStandardContains($0) || note.text.localizedStandardContains($0)
             }
         }.sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+    }
+    /// Bounded parallel scans preserve Foundation's locale-aware substring semantics.
+    /// Each child scans a disjoint range and checks cancellation between notes.
+    public static func searchConcurrently(_ notes: [Note], query: String, alreadySorted: Bool = false) async -> [Note] {
+        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        let workers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount), max(1, (notes.count + 255) / 256))
+        let size = max(1, (notes.count + workers - 1) / workers)
+        let chunks = await withTaskGroup(of: (Int, [Note]).self) { group in
+            for start in stride(from: 0, to: notes.count, by: size) {
+                let end = min(start + size, notes.count)
+                group.addTask {
+                    var matches: [Note] = []
+                    for index in start..<end {
+                        if Task.isCancelled { return (start, []) }
+                        let note = notes[index]
+                        if terms.allSatisfy({ note.path.localizedStandardContains($0) || note.text.localizedStandardContains($0) }) {
+                            matches.append(note)
+                        }
+                    }
+                    return (start, matches)
+                }
+            }
+            var chunks: [(Int, [Note])] = []
+            for await chunk in group { chunks.append(chunk) }
+            return chunks
+        }
+        guard !Task.isCancelled else { return [] }
+        let result = chunks.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
+        return alreadySorted ? result : result.sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
     }
     public static func creationPath(_ target: String, from: String) throws -> String {
         let raw = String(target.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0])

@@ -182,10 +182,17 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         jobs[key] = Task { [weak self] in
             defer { self?.jobs[key] = nil }
             do {
-                let data = try await load(source)
+                let original = try await load(source)
                 try Task.checkCancellation()
+                let worker = Task.detached(priority: .userInitiated) {
+                    guard !Task.isCancelled else { return nil as Data? }
+                    return AttachmentThumbnail.webPreview(data: original)
+                }
+                let preview = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                let data = preview ?? original
                 let ext = (URLComponents(string: source)?.path as NSString?)?.pathExtension ?? ""
-                let mime = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+                let mime = preview != nil ? "image/png" : (UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream")
                 urlSchemeTask.didReceive(URLResponse(url: url, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil))
                 urlSchemeTask.didReceive(data); urlSchemeTask.didFinish()
             } catch {
