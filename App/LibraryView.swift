@@ -6,7 +6,7 @@ struct LibraryView: View {
     @EnvironmentObject var store: LibraryStore
     @Environment(\.scenePhase) var scenePhase
     private enum Scope: String, CaseIterable { case recent = "最近", folders = "文件夹", favorites = "书签" }
-    @AppStorage("libraryScope") private var scope: Scope = .recent
+    @AppStorage("libraryScope") private var scope: Scope = .folders
     @State private var importing = false
     @State private var syncDetails = false
     @State private var snapshotNote: Note?
@@ -254,14 +254,17 @@ struct LibraryView: View {
 
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            if selecting {
-                HStack {
-                    Button("取消选择") { selecting = false; selectedPaths = [] }
-                    Spacer()
-                    Button("移动（\(selectedPaths.count)）") { renaming = false; moving = "__batch__" }.disabled(selectedPaths.isEmpty)
-                    Button("删除", role: .destructive) { batchDelete = true }.disabled(selectedPaths.isEmpty)
-                }.padding().background(.bar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                if selecting {
+                    HStack {
+                        Button("取消选择") { selecting = false; selectedPaths = [] }
+                        Spacer()
+                        Button("移动（\(selectedPaths.count)）") { renaming = false; moving = "__batch__" }.disabled(selectedPaths.isEmpty)
+                        Button("删除", role: .destructive) { batchDelete = true }.disabled(selectedPaths.isEmpty)
+                    }.padding().background(.bar)
+                }
+                scopeSwitcher.padding(.horizontal, 20).padding(.vertical, 8)
             }
         }
         .navigationTitle(query.isEmpty ? scope.rawValue : "搜索笔记")
@@ -270,9 +273,6 @@ struct LibraryView: View {
         #endif
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                Picker("浏览范围", selection: $scope) {
-                    ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
-                }.pickerStyle(.segmented).padding(.horizontal).padding(.vertical, 6)
                 Button { syncDetails = true } label: {
                     Label(store.syncSummary, systemImage: store.syncIssue == nil ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle")
                         .font(.caption).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -331,6 +331,16 @@ struct LibraryView: View {
             }
         }
     }
+    private var scopeSwitcher: some View {
+        Picker("浏览范围", selection: $scope) {
+            ForEach(Scope.allCases, id: \.self) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .controlSize(.large)
+    }
+
     private func noteButton(_ note: Note) -> some View {
         Button {
             if selecting {
