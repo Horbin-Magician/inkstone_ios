@@ -260,7 +260,8 @@ struct EditorView: View {
                     attachmentWorking = true; defer { attachmentWorking = false }
                     do {
                         let url = try result.get()
-                        if let path = try await store.vault?.importAttachment(url, from: current.path) {
+                        let notePath = try await attachmentNotePath()
+                        if let path = try await store.vault?.importAttachment(url, from: notePath) {
                             text += "\n[附件](" + path + ")\n"
                             reading = false
                         }
@@ -360,8 +361,19 @@ struct EditorView: View {
             }.navigationTitle("大纲与链接").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { info = false } } }
         }
     }
+    /// Inserting the first attachment commits the selected draft location. Later
+    /// attachments and all readers use this persisted path, even before autosave.
+    private func attachmentNotePath() async throws -> String {
+        guard !saving, !composing else { throw VaultError.busy }
+        if isNew, !(await save()) { throw VaultError.conflict }
+        guard !isNew else { throw VaultError.conflict }
+        return current.path
+    }
     private func insertImage(_ data: Data, extension ext: String) async -> String? {
-        do { return try await store.vault?.insertAttachment(data, extension: ext, from: current.path) }
+        do {
+            let notePath = try await attachmentNotePath()
+            return try await store.vault?.insertAttachment(data, extension: ext, from: notePath)
+        }
         catch { issue = error.localizedDescription; return nil }
     }
     private func previewAttachment(_ source: String) {
@@ -434,9 +446,7 @@ struct EditorView: View {
         do {
             let saved: Note
             if isNew {
-                let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else { throw VaultError.invalidPath }
-                let path = (targetFolder.isEmpty ? "" : targetFolder + "/") + (name.isEmpty ? (current.path as NSString).lastPathComponent : name + (name.lowercased().hasSuffix(".md") ? "" : ".md"))
+                let path = try Note.draftPath(folder: targetFolder, filename: filename, fallback: current.path)
                 saved = try await vault.create(path: path, text: text)
                 isNew = false
             } else {

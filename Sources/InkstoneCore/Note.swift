@@ -17,6 +17,16 @@ public struct Note: Identifiable, Hashable, Sendable {
         metadata = MarkdownMetadata(document: document)
         excerpt = String(document.previewText.prefix(150))
     }
+    /// Resolve a draft once before creating either its body or attachments.
+    public static func draftPath(folder: String, filename: String, fallback: String) throws -> String {
+        let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else { throw VaultError.invalidPath }
+        let leaf = name.isEmpty ? (fallback as NSString).lastPathComponent
+            : name + (name.lowercased().hasSuffix(".md") ? "" : ".md")
+        let path = (folder.isEmpty ? "" : folder + "/") + leaf
+        try SyncManifest.validatePath(path)
+        return path
+    }
     /// A provider may touch a file without changing its Markdown.
     /// Keep all content-derived values instead of parsing the document again.
     func withModified(_ modified: Date) -> Note {
