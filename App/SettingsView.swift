@@ -77,6 +77,7 @@ struct SettingsView: View {
                 LabeledContent("附加行距", value: "\(Int(readingSpacing)) pt")
             }
             Section("备份与保留") {
+                NavigationLink("本机恢复空间（历史、附件与文件夹）") { RecoveryStorageView().environmentObject(store) }
                 LabeledContent("笔记数量", value: "\(store.notes.count)")
                 LabeledContent("正文占用", value: ByteCountFormatter.string(fromByteCount: Int64(store.notes.reduce(0) { $0 + $1.text.utf8.count }), countStyle: .file))
                 Button(preparing ? "正在准备备份…" : "导出整库 ZIP（含附件）") { Task {
@@ -134,23 +135,24 @@ struct RecoveryView: View {
     @State private var restoredNote: Note?
     @State private var openRestored = false
     @State private var working = false
-    @State private var kind = "历史版本"
+    @State private var kind = RecoveryKind.history
     var body: some View {
         NavigationStack {
             List {
                 Picker("记录类型", selection: $kind) {
-                    Text("历史版本").tag("历史版本")
-                    Text("已删除").tag("已删除")
+                    Text("历史版本").tag(RecoveryKind.history)
+                    Text("已删除").tag(RecoveryKind.deleted)
+                    Text("草稿").tag(RecoveryKind.draft)
                 }.pickerStyle(.segmented)
-                if store.records.filter({ $0.kind == kind }).isEmpty { ContentUnavailableView("暂无恢复记录", systemImage: "clock.arrow.circlepath", description: Text("保存前的版本和已删除笔记会显示在这里。")) }
-                ForEach(store.records.filter { $0.kind == kind }) { record in
+                if store.records.filter({ kind == .history ? $0.kind.isHistory : $0.kind == kind }).isEmpty { ContentUnavailableView("暂无恢复记录", systemImage: "clock.arrow.circlepath", description: Text("保存前的版本和已删除笔记会显示在这里。")) }
+                ForEach(store.records.filter { kind == .history ? $0.kind.isHistory : $0.kind == kind }) { record in
                     Button { Task {
                         do { preview = try await store.vault?.recoveryRecord(record) }
                         catch { store.error = error.localizedDescription }
                     } } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(record.path).font(.headline).foregroundStyle(.primary)
-                            HStack { Text(record.kind); Text(record.date, style: .date); Text(record.date, style: .time) }.font(.caption).foregroundStyle(.secondary)
+                            HStack { Text(record.kind.rawValue); Text(record.date, style: .date); Text(record.date, style: .time) }.font(.caption).foregroundStyle(.secondary)
                             Text(record.excerpt).lineLimit(2).font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 6)
                     }
@@ -161,7 +163,7 @@ struct RecoveryView: View {
                 .sheet(item: $preview) { record in
                     NavigationStack {
                         ScrollView { Text(record.text).font(.system(.body, design: .monospaced)).textSelection(.enabled).padding().frame(maxWidth: .infinity, alignment: .leading) }
-                            .navigationTitle(record.kind)
+                            .navigationTitle(record.kind.rawValue)
                             .toolbar {
                                 ToolbarItem(placement: .cancellationAction) { Button("返回") { preview = nil }.disabled(working) }
                                 ToolbarItem(placement: .confirmationAction) {

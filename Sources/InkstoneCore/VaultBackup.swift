@@ -27,11 +27,12 @@ extension Vault {
     }
 
     public func pruneRecovery(before date: Date) throws -> Int {
+        try requireIdle()
         guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else { return 0 }
         var removed = 0
         for case let file as URL in walker where file.pathExtension == "json" {
             let entry = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
-            if entry.kind != "恢复草稿" && entry.date < date {
+            if entry.kind != .draft && entry.date < date {
                 try fm.removeItem(at: file); removeCatalogRecord(entry); removed += 1
             }
         }

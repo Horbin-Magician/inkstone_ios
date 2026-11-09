@@ -22,10 +22,10 @@ public struct RecoveryRecord: Codable, Identifiable, Hashable, Sendable {
     public let path: String
     public let text: String
     public let date: Date
-    public let kind: String
+    public let kind: RecoveryKind
     public let baseText: String?
     public let isNew: Bool?
-    public init(path: String, text: String, kind: String, baseText: String? = nil, isNew: Bool? = nil) {
+    public init(path: String, text: String, kind: RecoveryKind, baseText: String? = nil, isNew: Bool? = nil) {
         id = UUID(); self.path = path; self.text = text; date = Date(); self.kind = kind; self.baseText = baseText; self.isNew = isNew
     }
 }
@@ -226,7 +226,7 @@ public actor Vault {
                 let coalescing = historySession != nil && checkpoint?.session == historySession
                     && checkpoint?.path == path && checkpoint?.text == expected
                     && now.timeIntervalSince(checkpoint!.date) < 60
-                if !coalescing { try record(RecoveryRecord(path: path, text: expected, kind: "历史版本")) }
+                if !coalescing { try record(RecoveryRecord(path: path, text: expected, kind: .history)) }
                 try Data(text.utf8).write(to: file, options: .atomic)
                 if let historySession {
                     historyCheckpoint = (path, historySession, coalescing ? checkpoint!.date : now, text)
@@ -240,7 +240,7 @@ public actor Vault {
         let target = try url(path)
         try coordinated(target, writing: true) { file in
             guard fm.fileExists(atPath: file.path), try read(file) == expected else { throw VaultError.conflict }
-            try record(RecoveryRecord(path: path, text: expected, kind: "已删除"))
+            try record(RecoveryRecord(path: path, text: expected, kind: .deleted))
             try fm.removeItem(at: file)
         }
     }
@@ -269,7 +269,7 @@ public actor Vault {
                 let folderPath = folder.standardizedFileURL.resolvingSymlinksInPath().path
                 let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
                 let relative = path + "/" + filePath.dropFirst(folderPath.count + 1)
-                entries.append(RecoveryRecord(path: relative, text: try read(file), kind: "已删除"))
+                entries.append(RecoveryRecord(path: relative, text: try read(file), kind: .deleted))
             }
             if let enumerationError { throw enumerationError }
             // Finish all recovery writes before removing any source content.
@@ -304,7 +304,7 @@ public actor Vault {
     /// The record ID makes retries safe if the app exits after writing the copy.
     public func migrateLegacyDrafts() throws {
         try requireIdle()
-        for summary in try recoverySummaries() where summary.kind == "恢复草稿" {
+        for summary in try recoverySummaries() where summary.kind == .draft {
             let entry = try recoveryRecord(summary)
             let file = recovery.appendingPathComponent(summary.file)
             let path = (entry.path as NSString).deletingPathExtension + "-恢复-" + entry.id.uuidString + ".md"

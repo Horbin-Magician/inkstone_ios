@@ -1,11 +1,20 @@
 import Foundation
 
+public enum RecoveryKind: String, Codable, Hashable, Sendable {
+    case history = "历史版本", syncBefore = "同步前版本", deleted = "已删除", draft = "恢复草稿", other = "其他恢复记录"
+    public var isHistory: Bool { self == .history || self == .syncBefore || self == .other }
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: value) ?? .other
+    }
+}
+
 /// Small list metadata; the full version is loaded only when opened.
 public struct RecoverySummary: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public let path: String
     public let date: Date
-    public let kind: String
+    public let kind: RecoveryKind
     public let excerpt: String
     let file: String
     init(_ record: RecoveryRecord, file: String) {

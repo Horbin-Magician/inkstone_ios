@@ -95,7 +95,7 @@ struct PerformanceTests {
         defer { try? FileManager.default.removeItem(at: base) }
         let vault = try Vault(root: base.appendingPathComponent("vault"), recovery: base.appendingPathComponent("recovery"))
         let body = String(repeating: "中文 searchable paragraph. ", count: 100)
-        for i in 0..<1000 { try await vault.record(RecoveryRecord(path: "note-\(i % 100).md", text: body, kind: "历史版本")) }
+        for i in 0..<1000 { try await vault.record(RecoveryRecord(path: "note-\(i % 100).md", text: body, kind: .history)) }
         _ = try await vault.recoverySummaries()
         let clock = ContinuousClock()
         var start = clock.now

@@ -72,7 +72,7 @@ final class VaultTests {
         #expect(!String(decoding: bytes, as: UTF8.self).contains("秘密草稿"))
     }
     private func legacyDraft(path: String, text: String) throws {
-        let entry = RecoveryRecord(path: path, text: text, kind: "恢复草稿")
+        let entry = RecoveryRecord(path: path, text: text, kind: .draft)
         let directory = base.appendingPathComponent("recovery/drafts")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try JSONEncoder().encode(entry).write(to: directory.appendingPathComponent(entry.id.uuidString + ".json"))
@@ -252,7 +252,7 @@ final class VaultTests {
         let records = try await vault.records()
         #expect(records.count == 1)
         #expect(records.first?.text == "before")
-        #expect(records.first?.kind == "历史版本")
+        #expect(records.first?.kind == .history)
         let snapshot = try await vault.scan()
         #expect(snapshot.notes.first?.text == "after")
     }
@@ -316,7 +316,7 @@ final class VaultTests {
         _ = try await vault.save(path: "a.md", text: "finished", expected: "first")
         let reopened = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
         #expect(try await reopened.scan().notes.first?.text == "finished")
-        #expect(try await reopened.records().allSatisfy { $0.kind == "历史版本" })
+        #expect(try await reopened.records().allSatisfy { $0.kind == .history })
     }
     @Test func testScanReportsInvalidEncodingAndIgnoresHiddenDirectories() async throws {
         try Data([0xff, 0xfe, 0xff]).write(to: root.appendingPathComponent("bad.md"))

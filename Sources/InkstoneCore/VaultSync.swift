@@ -327,7 +327,7 @@ extension Vault {
                     try old.write(to: backup.appendingPathComponent("content"), options: .atomic)
                     try Data(path.utf8).write(to: backup.appendingPathComponent("path.txt"), options: .atomic)
                     if path.lowercased().hasSuffix(".md"), let text = String(data: old, encoding: .utf8) {
-                        try self.record(RecoveryRecord(path: path, text: text, kind: "同步前版本"))
+                        try self.record(RecoveryRecord(path: path, text: text, kind: .syncBefore))
                     }
                     try fm.removeItem(at: file)
                     if target[path] == nil { report.deleted += 1 }
