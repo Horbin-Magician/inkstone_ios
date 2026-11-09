@@ -11,10 +11,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 
 repo = Path(__file__).resolve().parent.parent
 desktop = repo.parent / 'inkstone'
 objects = {}
+faults = set()
 lock = threading.Lock()
 
 class DAV(http.server.BaseHTTPRequestHandler):
@@ -41,6 +43,15 @@ class DAV(http.server.BaseHTTPRequestHandler):
         expected = 'Basic ' + base64.b64encode(b'interop:test-only').decode()
         if self.headers.get('Authorization') != expected:
             return self.respond(401)
+        fault = ('timeout', self.path)
+        with lock:
+            stall = self.path.startswith('/timeout-dav/') and self.path.endswith('/inkstone/manifest.json') and self.command == 'GET' and fault not in faults
+            if stall:
+                faults.add(fault)
+        if stall:
+            time.sleep(2)
+            self.close_connection = True
+            return
         with lock:
             current = objects.get(self.path)
             tag = '"' + hashlib.sha256(current).hexdigest() + '"' if current is not None else None
@@ -49,6 +60,16 @@ class DAV(http.server.BaseHTTPRequestHandler):
             if self.command == 'MKCOL':
                 return self.respond(201)
             if self.command == 'GET':
+                fault = ('download', self.path)
+                if self.path.startswith('/fault-dav/') and '/objects/' in self.path and current is not None and fault not in faults:
+                    faults.add(fault)
+                    self.send_response(200)
+                    self.send_header('Content-Length', str(len(current)))
+                    self.end_headers()
+                    self.wfile.write(current[:max(1, len(current) // 2)])
+                    self.wfile.flush()
+                    self.close_connection = True
+                    return
                 return self.respond(404) if current is None else self.respond(200, current, tag)
             if self.command == 'PUT':
                 if self.headers.get('If-None-Match') == '*' and current is not None:
@@ -56,6 +77,11 @@ class DAV(http.server.BaseHTTPRequestHandler):
                 if self.headers.get('If-Match') and self.headers['If-Match'] != tag:
                     return self.respond(412)
                 objects[self.path] = body
+                fault = ('publish', self.path)
+                if self.path.startswith('/fault-dav/') and self.path.endswith('/manifest.json') and fault not in faults:
+                    faults.add(fault)
+                    self.close_connection = True  # Manifest committed, response lost.
+                    return
                 return self.respond(201 if current is None else 204)
             return self.respond(405)
 
@@ -75,7 +101,7 @@ with tempfile.TemporaryDirectory(prefix='inkstone-interop-') as temp:
     env['INKSTONE_INTEROP_URL'] = f'http://127.0.0.1:{server.server_port}/dav/'
     env['INKSTONE_INTEROP_DESKTOP'] = str(desktop / 'target/debug/inkstone-mobile-interop')
     try:
-        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter \"desktopHTTPInterop|webDAVFileTransport|remoteImagePreview\"'], cwd=repo, env=env, check=True)
+        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter \"desktopHTTPInterop|webDAVFileTransport|remoteImagePreview|httpInterruptedSync|httpTimeout\"'], cwd=repo, env=env, check=True)
         manifest = json.loads(objects['/dav/inkstone/manifest.json'])
         assert manifest['version'] == 1
         print('PASS: actual Rust desktop core and Swift mobile core exchanged notes, attachments, moves, conflicts and deletions over HTTP WebDAV.')

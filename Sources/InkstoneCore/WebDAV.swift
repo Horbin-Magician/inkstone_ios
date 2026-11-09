@@ -64,13 +64,17 @@ public final class WebDAV: SyncRemote, @unchecked Sendable {
     private let authorization: String
     private let session: URLSession
     public let identity: String
-    public init(settings: WebDAVSettings, password: String) throws {
+    public convenience init(settings: WebDAVSettings, password: String) throws {
+        try self.init(settings: settings, password: password, requestTimeout: 60, resourceTimeout: 300)
+    }
+    // Internal injection keeps timeout recovery testable without minute-long waits.
+    init(settings: WebDAVSettings, password: String, requestTimeout: TimeInterval, resourceTimeout: TimeInterval) throws {
         root = try settings.endpoint()
         identity = root.absoluteString + "\n" + settings.username
         authorization = "Basic " + Data((settings.username + ":" + password).utf8).base64EncodedString()
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 300
+        config.timeoutIntervalForRequest = requestTimeout
+        config.timeoutIntervalForResource = resourceTimeout
         config.urlCache = nil
         session = URLSession(configuration: config)
     }
