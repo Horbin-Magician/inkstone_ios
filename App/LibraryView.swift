@@ -359,7 +359,9 @@ struct LibraryView: View {
             Button { renaming = false; moving = note.path } label: {
                 Label("移动到", systemImage: "folder")
             }
-            Button("重命名") { renaming = true; moving = note.path }
+            Button { renaming = true; moving = note.path } label: {
+                Label("重命名", systemImage: "pencil")
+            }
             Button { store.toggleFavorite(note.path) } label: { Label(store.favorites.contains(note.path) ? "移除书签" : "书签", systemImage: "bookmark") }
             deleteButton(note)
         }
