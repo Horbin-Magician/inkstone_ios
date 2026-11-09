@@ -224,3 +224,57 @@ test('shared typography follows reading settings without changing Markdown', asy
   await expect(page.getByRole('toolbar')).toHaveCount(0);
   expect(await markdown(page)).toBe(source);
 });
+
+test('retained editor resumes after reading with selection and undo intact', async ({page}) => {
+  await load(page, '正文\n');
+  await page.evaluate(() => { inkstone.select(1); inkstone.focus(true); });
+  await page.keyboard.insertText('新增');
+  await page.evaluate(() => {
+    window.retainedView = inkstone.view;
+    window.retainedSelection = inkstone.view.state.selection.from;
+    inkstone.flush(true);
+    inkstone.applyUpdates([['setEnabled', [false]], ['focus', [false]]]);
+  });
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+  await page.evaluate(() => inkstone.applyUpdates([
+    ['releaseSnapshot', []], ['setEnabled', [true]], ['focus', [true]]
+  ]));
+  expect(await page.evaluate(() => inkstone.view === retainedView && inkstone.view.state.selection.from === retainedSelection)).toBe(true);
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+  await page.evaluate(() => inkstone.command('撤销'));
+  expect(await markdown(page)).toBe('正文\n');
+  await page.keyboard.insertText('恢复');
+  expect(await markdown(page)).toContain('恢复');
+});
+
+test('title suggestions are deferred until the link dialog opens', async ({page}) => {
+  await load(page, '正文');
+  await page.evaluate(() => inkstone.setTitles(Array.from({length: 10000}, (_, i) => '笔记' + i)));
+  await expect(page.locator('#note-targets option')).toHaveCount(0);
+  await page.evaluate(() => inkstone.command('插入或修改链接'));
+  await expect(page.locator('#note-targets option')).toHaveCount(10000);
+  await page.evaluate(() => inkstone.setTitles(['更新标题']));
+  await expect(page.locator('#note-targets option')).toHaveCount(1);
+  await expect(page.locator('#note-targets option')).toHaveAttribute('value', '[[更新标题]]');
+});
+
+test('prewarmed shell accepts a document and retained editor receives reader changes', async ({page}) => {
+  await page.goto('http://127.0.0.1:8765/editor.html');
+  await page.waitForFunction(() => window.inkstone);
+  await page.evaluate(() => inkstone.applyUpdates([['setEnabled', [false]], ['focus', [false]]]));
+  expect(await page.evaluate(() => inkstone.view == null)).toBe(true);
+  await page.evaluate(() => inkstone.applyUpdates([
+    ['load', ['- [ ] 待办\n', 'first']], ['releaseSnapshot', []], ['setEnabled', [true]], ['focus', [true]]
+  ]));
+  await page.evaluate(() => {
+    inkstone.flush(true);
+    inkstone.applyUpdates([['setEnabled', [false]], ['focus', [false]]]);
+    inkstone.applyUpdates([['setSource', ['- [x] 待办\n', 'first']], ['releaseSnapshot', []], ['setEnabled', [true]], ['focus', [true]]]);
+  });
+  expect(await markdown(page)).toBe('- [x] 待办\n');
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+  await page.evaluate(() => inkstone.applyUpdates([['load', ['另一篇正文', 'second']], ['setEnabled', [true]], ['focus', [true]]]));
+  expect(await markdown(page)).toBe('另一篇正文');
+  await page.evaluate(() => inkstone.command('撤销'));
+  expect(await markdown(page)).toBe('另一篇正文');
+});

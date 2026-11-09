@@ -14,6 +14,7 @@ struct EditorView: View {
     @State private var current: Note
     @State private var text: String
     @State private var reading = true
+    @State private var richEditorPrepared = false
     @AppStorage("markdownSourceEditing") private var sourceEditing = false
     @StateObject private var richEditor = RichEditorBridge()
     private var richDocumentID: UUID { richEditor.session.documentID }
@@ -107,6 +108,7 @@ struct EditorView: View {
                 if isNew {
                     TextField("标题（可稍后填写）", text: $filename).textFieldStyle(.roundedBorder).padding(.horizontal)
                 }
+                ZStack {
                 if reading {
                     ScrollViewReader { proxy in
                     ScrollView {
@@ -134,10 +136,10 @@ struct EditorView: View {
                             if let line { withAnimation { proxy.scrollTo(line, anchor: .top) } }
                         }
                     }
-                } else {
-                    if !sourceEditing {
+                }
+                    if !sourceEditing && (richEditorPrepared || !reading) {
                         RichMarkdownEditor(text: $text, focused: $editorFocused, composing: Binding(get: { composing }, set: { composing = $0 }),
-                            documentID: richDocumentID, imageContext: imageContext, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
+                            active: !reading, documentID: richDocumentID, imageContext: imageContext, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
                             titles: store.linkTitles, bridge: richEditor,
                             loadAttachment: { [vault = store.vault, path = current.path] source in
                                 guard let vault else { throw VaultError.invalidPath }
@@ -146,7 +148,11 @@ struct EditorView: View {
                                 attachmentWorking = true; defer { attachmentWorking = false }
                                 return await insertImage(data, extension: ext)
                             }, onError: { issue = $0 })
-                    } else {
+                            .opacity(reading ? 0 : 1)
+                            .allowsHitTesting(!reading)
+                            .accessibilityHidden(reading)
+                    }
+                    if !reading && sourceEditing {
                     #if os(iOS)
                     MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: Binding(get: { composing }, set: { composing = $0 }), titles: store.linkTitles, pasteImage: { data in
                         attachmentWorking = true; defer { attachmentWorking = false }
@@ -232,7 +238,16 @@ struct EditorView: View {
             .onChange(of: richEditor.session.editingVersion) { _, _ in scheduleSave() }
             .onChange(of: filename) { _, _ in if isNew { scheduleSave() } }
             .onChange(of: targetFolder) { _, _ in if isNew { scheduleSave() } }
-            .onChange(of: reading) { _, value in if value { flushSave() } }
+            .onChange(of: reading) { _, value in
+                if value { flushSave() } else { richEditorPrepared = true }
+            }
+            .task(id: parsedSource) {
+                // Warm the web shell after the reader has content; defer document
+                // parsing until editing so opening a note does not parse it twice.
+                guard reading, parsedDocument != nil, !sourceEditing, !richEditorPrepared else { return }
+                do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                richEditorPrepared = true
+            }
             .onChange(of: editorFocused) { _, value in if !value { flushSave() } }
             .onChange(of: composing) { _, marked in if !marked { scheduleSave() } }
             .onChange(of: scenePhase) { _, phase in if phase != .active { flushSave() } }

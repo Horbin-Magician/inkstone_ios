@@ -16,6 +16,16 @@ const post = value => window.webkit?.messageHandlers.richEditor.postMessage({...
 const editor = document.querySelector('#editor');
 const status = document.querySelector('#status');
 const commands = new Map();
+let noteTitles = [], titlesDirty = false;
+function prepareTitles() {
+  if (!titlesDirty) return;
+  const options = document.createDocumentFragment();
+  for (const title of noteTitles) {
+    const option = document.createElement('option'); option.value = '[[' + title + ']]'; options.appendChild(option);
+  }
+  document.querySelector('#note-targets').replaceChildren(options);
+  titlesDirty = false;
+}
 
 function snapshot() {
   if (serializedRevision !== revision) {
@@ -92,6 +102,7 @@ register('链接', '插入或修改链接', (state, dispatch) => {
   const current = schema.marks.link.isInSet(state.selection.$from.marks());
   document.querySelector('#link-url').value = current?.attrs.href || '';
   document.querySelector('#link-label').value = state.doc.textBetween(state.selection.from, state.selection.to);
+  prepareTitles();
   dialog.showModal();
   return true;
 });
@@ -230,6 +241,9 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
 }
 
 window.inkstone = {
+  applyUpdates(updates) {
+    for (const [name, args] of updates) window.inkstone[name](...args);
+  },
   load: initialize,
   flush: (freeze = false) => {
     if (!view) return null;
@@ -266,8 +280,8 @@ window.inkstone = {
     view?.dom.querySelectorAll('img[data-attachment-source]').forEach(img => { img.src = imageURL(img.dataset.attachmentSource); });
   },
   setTitles(titles) {
-    const datalist = document.querySelector('#note-targets'); datalist.replaceChildren();
-    for (const title of titles) { const option = document.createElement('option'); option.value = '[[' + title + ']]'; datalist.appendChild(option); }
+    noteTitles = titles; titlesDirty = true;
+    if (document.querySelector('#link-dialog').open) prepareTitles();
   },
   insertImage(path) {
     if (!imageBookmark || !view) return;

@@ -36,3 +36,27 @@ test('bridge input benchmark', async ({page}) => {
     console.log('BRIDGE_BENCH ' + JSON.stringify({documentBytes: bytes, p50InputToFrameMs: latencies[5], p95InputToFrameMs: latencies[9], ...result}));
   }
 });
+
+test('document initialization versus retained mode switch benchmark', async ({page}) => {
+  test.skip(process.env.INKSTONE_LOAD_BENCHMARK !== '1');
+  await page.goto('http://127.0.0.1:8765/editor.html');
+  await page.waitForFunction(() => window.inkstone);
+  const result = await page.evaluate(() => {
+    const source = Array.from({length: 300}, (_, i) => `## 段落 ${i}\n\n中文正文 **格式** 与 [链接](https://example.com)。\n\n`).join('');
+    const cold = [], retained = [];
+    for (let i = 0; i < 11; i++) {
+      let start = performance.now();
+      if (!inkstone.load(source, 'load-' + i)) throw new Error('Load failed');
+      void inkstone.view.dom.offsetHeight;
+      cold.push(performance.now() - start);
+      inkstone.flush(true); inkstone.setEnabled(false); inkstone.focus(false);
+      start = performance.now();
+      inkstone.applyUpdates([['releaseSnapshot', []], ['setEnabled', [true]], ['focus', [true]]]);
+      void inkstone.view.dom.offsetHeight;
+      retained.push(performance.now() - start);
+    }
+    const median = values => values.slice(1).sort((a, b) => a - b)[5];
+    return {bytes: new TextEncoder().encode(source).length, initializationMedianMs: median(cold), retainedSwitchMedianMs: median(retained)};
+  });
+  console.log('LOAD_BENCH ' + JSON.stringify(result));
+});

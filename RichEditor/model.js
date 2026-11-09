@@ -54,7 +54,9 @@ tokenizer.core.ruler.after('inline', 'tasks', state => {
   });
 });
 const cellAttrs = token => ({align: token.attrGet('style')?.replace('text-align:', '').trim() || null});
-const parser = new MarkdownParser(schema, tokenizer, {
+// Reuse the tokens used for source ranges. MarkdownParser's tokenizer interface
+// accepts an environment, so each load supplies its own tokens without shared cache.
+const parser = new MarkdownParser(schema, {parse: (_source, environment) => environment.tokens}, {
   ...defaultMarkdownParser.tokens,
   list_item: {block: 'list_item', getAttrs: token => ({checked: token.meta?.checked ?? null})},
   s: {mark: 'strike'},
@@ -115,7 +117,7 @@ export function loadMarkdown(source) {
   const parseSource = clean.map((line, i) => i < frontmatterEnd ? '' : line).join('\n');
   const tokens = tokenizer.parse(parseSource, {});
   const ranges = tokens.filter(token => token.level === 0 && token.nesting >= 0 && token.map).map(token => token.map);
-  const parsed = parser.parse(parseSource);
+  const parsed = parser.parse(parseSource, {tokens});
   const content = [], originals = new Map();
   let cursor = 0, nextID = 0, prefix = '';
   const add = (node, original, tail = '') => {

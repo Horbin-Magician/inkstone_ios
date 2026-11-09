@@ -82,6 +82,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     @Binding var composing: Bool
+    let active: Bool
     let documentID: UUID
     let imageContext: ImageResourceContext
     let fontSize: Double
@@ -142,6 +143,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var lastID: UUID?
         var lastImageContext: String?
         var revision = -1
+        var lastActive: Bool?
         var lastFocus: Bool?
         var lastEnabled: Bool?
         var appearance: [Double] = []
@@ -159,31 +161,40 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         }
         func synchronize() {
             guard ready else { return }
-            if lastID != parent.documentID {
+            var updates: [[Any]] = []
+            func enqueue(_ name: String, _ arguments: [Any] = []) { updates.append([name, arguments]) }
+            if parent.active && lastID != parent.documentID {
                 lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil; lastEnabled = nil
                 lastImageContext = parent.imageContext.token
-                call("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion, parent.imageContext.token])
-            } else if lastSource != parent.text {
+                enqueue("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion, parent.imageContext.token])
+            } else if parent.active && lastSource != parent.text {
                 lastSource = parent.text; lastEnabled = nil
-                call("setSource", [parent.text, parent.documentID.uuidString])
+                enqueue("setSource", [parent.text, parent.documentID.uuidString])
             }
             if lastImageContext != parent.imageContext.token {
                 lastImageContext = parent.imageContext.token
-                call("setImageContext", [parent.imageContext.token])
+                enqueue("setImageContext", [parent.imageContext.token])
             }
-            if lastEnabled != enabled {
-                lastEnabled = enabled; call("setEnabled", [enabled])
+            if lastActive != parent.active {
+                lastActive = parent.active
+                if parent.active { enqueue("releaseSnapshot") }
+            }
+            let editable = enabled && parent.active
+            if lastEnabled != editable {
+                lastEnabled = editable; enqueue("setEnabled", [editable])
             }
             if lastPalette != parent.palette {
-                lastPalette = parent.palette; call("setPalette", [lastPalette])
+                lastPalette = parent.palette; enqueue("setPalette", [lastPalette])
             }
             if appearance != [parent.fontSize, parent.lineSpacing] {
-                appearance = [parent.fontSize, parent.lineSpacing]; call("setAppearance", appearance)
+                appearance = [parent.fontSize, parent.lineSpacing]; enqueue("setAppearance", appearance)
             }
-            if lastTitles != parent.titles { lastTitles = parent.titles; call("setTitles", [lastTitles]) }
-            if lastFocus != parent.focused {
-                lastFocus = parent.focused; call("focus", [parent.focused])
+            if parent.active && lastTitles != parent.titles { lastTitles = parent.titles; enqueue("setTitles", [lastTitles]) }
+            let focused = parent.active && parent.focused
+            if lastFocus != focused {
+                lastFocus = focused; enqueue("focus", [focused])
             }
+            if !updates.isEmpty { call("applyUpdates", [updates]) }
         }
         @discardableResult func accept(_ body: [String: Any]) -> Bool {
             guard body["session"] as? String == parent.documentID.uuidString,
@@ -200,6 +211,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             if type == "ready" { ready = true; synchronize(); return }
             guard body["session"] as? String == parent.documentID.uuidString,
                   parent.documentID == parent.bridge.session.documentID else { return }
+            guard parent.active else { return }
             switch type {
             case "change":
                 guard let version = body["revision"] as? Int, let composing = body["composing"] as? Bool else { return }
@@ -230,7 +242,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             guard parent.documentID == parent.bridge.session.documentID else { return }
-            ready = false; lastID = nil; appearance = []; lastTitles = []
+            ready = false; lastID = nil; lastActive = nil; appearance = []; lastTitles = []
             parent.composing = false
             parent.bridge.session.snapshotFailure = "富文本编辑进程中断，无法确认最新修改。可以保留最近取得的快照并转到源码编辑。"
             parent.onError(parent.bridge.session.snapshotFailure!)
