@@ -187,16 +187,16 @@ extension Vault {
         for hash in needed.sorted() {
             try Task.checkCancellation()
             let file = objects.appendingPathComponent(hash)
-            if fm.fileExists(atPath: file.path), try digest(Self.bytes(file)) == hash { continue }
+            if fm.fileExists(atPath: file.path), try SyncFile.hash(file) == hash { continue }
             if let path = localPaths[hash] { staging.append((hash, path)) }
             else { downloads.append(hash) }
         }
         func stage(using coordinator: NSFileCoordinator?) throws {
             for (hash, path) in staging {
                 try Task.checkCancellation()
-                let data = try coordinated(fileURL(path), writing: false, coordinator: coordinator) { try Self.bytes($0) }
-                guard digest(data) == hash else { throw VaultError.conflict }
-                try data.write(to: objects.appendingPathComponent(hash), options: .atomic)
+                try coordinated(fileURL(path), writing: false, coordinator: coordinator) { source in
+                    try SyncFile.copy(source, to: objects.appendingPathComponent(hash), hash: hash, replaceCache: true, mismatchIsConflict: true)
+                }
             }
         }
         // Batch only actual local reads. Cached objects and downloads need no
@@ -209,19 +209,26 @@ extension Vault {
         mark("stageLocal")
         // Bounded workers stage results themselves: completed response bodies do
         // not accumulate in the parent task. Publication waits for every worker.
-        try await Self.transfer(downloads) { hash in
-            let data = try await remote.download(hash)
-            guard data.count <= 128 * 1024 * 1024, digest(data) == hash else { throw SyncFailure("云端文件校验失败。") }
-            try data.write(to: objects.appendingPathComponent(hash), options: .atomic)
+        // The manifest has no object sizes. Reserve the maximum accepted size
+        // per download rather than underestimating unknown responses.
+        try await SyncTransfer.run(downloads.map { SyncTransfer(hash: $0, bytes: SyncTransfer.fileLimit) }) { item in
+            let destination = objects.appendingPathComponent(item.hash)
+            let temporary = objects.appendingPathComponent(".download-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            try await remote.download(item.hash, to: temporary)
+            try SyncFile.copy(temporary, to: destination, hash: item.hash, replaceCache: true)
         }
         mark("download")
         report.downloaded += downloads.count
         try await remote.prepare()
         mark("prepareRemote")
-        try await Self.transfer(uploads.sorted()) { hash in
-            let data = try Self.bytes(objects.appendingPathComponent(hash))
-            guard digest(data) == hash else { throw SyncFailure("暂存文件校验失败。") }
-            try await remote.upload(hash, data: data)
+        let uploadItems = try uploads.sorted().map { hash in
+            SyncTransfer(hash: hash, bytes: max(1, try SyncFile.size(objects.appendingPathComponent(hash))))
+        }
+        try await SyncTransfer.run(uploadItems) { item in
+            let file = objects.appendingPathComponent(item.hash)
+            guard try max(1, SyncFile.size(file)) == item.bytes, try SyncFile.hash(file) == item.hash else { throw SyncFailure("暂存文件校验失败。") }
+            try await remote.upload(item.hash, from: file)
         }
         mark("upload")
         report.uploaded += uploads.count
@@ -247,18 +254,6 @@ extension Vault {
         try? fm.removeItem(at: objects)
         mark("commitAndCleanup")
         return finish(report)
-    }
-    private nonisolated static func transfer(_ hashes: [String], operation: @escaping @Sendable (String) async throws -> Void) async throws {
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            var remaining = hashes.makeIterator()
-            for _ in 0..<3 {
-                if let hash = remaining.next() { group.addTask { try Task.checkCancellation(); try await operation(hash) } }
-            }
-            while try await group.next() != nil {
-                try Task.checkCancellation()
-                if let hash = remaining.next() { group.addTask { try Task.checkCancellation(); try await operation(hash) } }
-            }
-        }
     }
     private func preflight(_ plan: SyncPathPlan) throws {
         let removable = Set(plan.removals.map { $0.lowercased() })
@@ -305,7 +300,7 @@ extension Vault {
         // Validate every staged install before the first destructive operation.
         for path in plan.installs {
             let hash = target[path]!
-            guard try digest(Self.bytes(objects.appendingPathComponent(hash))) == hash else {
+            guard try SyncFile.hash(objects.appendingPathComponent(hash), cancellable: false) == hash else {
                 throw SyncFailure("暂存文件校验失败，已保留同步恢复记录。")
             }
         }
@@ -314,8 +309,7 @@ extension Vault {
                 let file = try fileURL(path)
                 try coordinated(file, writing: true) { file in
                     guard fm.fileExists(atPath: file.path) else { return }
-                    let old = try Self.bytes(file)
-                    let current = digest(old)
+                    let current = try SyncFile.hash(file, cancellable: false)
                     // Legacy journals may already have installed this target.
                     if current == target[path] { return }
                     guard current == transaction.before[path] else {
@@ -324,9 +318,9 @@ extension Vault {
                     }
                     let backup = state.appendingPathComponent("backups/" + UUID().uuidString)
                     try fm.createDirectory(at: backup, withIntermediateDirectories: true)
-                    try old.write(to: backup.appendingPathComponent("content"), options: .atomic)
+                    try SyncFile.copy(file, to: backup.appendingPathComponent("content"), hash: current, cancellable: false)
                     try Data(path.utf8).write(to: backup.appendingPathComponent("path.txt"), options: .atomic)
-                    if path.lowercased().hasSuffix(".md"), let text = String(data: old, encoding: .utf8) {
+                    if path.lowercased().hasSuffix(".md"), let text = String(data: try Self.bytes(file), encoding: .utf8) {
                         try self.record(RecoveryRecord(path: path, text: text, kind: .syncBefore))
                     }
                     try fm.removeItem(at: file)
@@ -362,14 +356,12 @@ extension Vault {
                         guard try fm.contentsOfDirectory(atPath: file.path).isEmpty else { throw VaultError.conflict }
                         try fm.removeItem(at: file)
                     } else {
-                        if try digest(Self.bytes(file)) != target[path] { report.conflicts.append(path) }
+                        if try SyncFile.hash(file, cancellable: false) != target[path] { report.conflicts.append(path) }
                         return // retain external edits and already installed content
                     }
                 }
                 let hash = target[path]!
-                let data = try Self.bytes(objects.appendingPathComponent(hash))
-                guard digest(data) == hash else { throw SyncFailure("暂存文件校验失败。") }
-                try data.write(to: file, options: .atomic)
+                try SyncFile.copy(objects.appendingPathComponent(hash), to: file, hash: hash, cancellable: false)
             }
         }
     }

@@ -41,18 +41,18 @@ actor MemoryRemote: SyncRemote {
         }
         return (value, revision.map(String.init))
     }
-    func download(_ hash: String) async throws -> Data {
+    func download(_ hash: String, to file: URL) async throws {
         downloadCount += 1
         defer { activeTransfers -= 1 }
         try await transferStarted()
-        if corrupt { return Data("corrupt".utf8) }
-        return try #require(objects[hash])
+        if corrupt { try Data("corrupt".utf8).write(to: file); return }
+        try #require(objects[hash]).write(to: file)
     }
-    func upload(_ hash: String, data: Data) async throws {
+    func upload(_ hash: String, from file: URL) async throws {
         uploadCount += 1
         defer { activeTransfers -= 1 }
         try await transferStarted()
-        objects[hash] = data
+        objects[hash] = try Data(contentsOf: file)
     }
     func publish(_ manifest: SyncManifest, revision: String?) throws {
         guard !rejectPublish, revision == self.revision.map(String.init) else { throw SyncFailure("stale") }

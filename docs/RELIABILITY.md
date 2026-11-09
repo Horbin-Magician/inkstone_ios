@@ -40,3 +40,7 @@
 新增回归包含有效链接、悬空链接、独立正文恢复以及清理后外部目标内容不变。修复前该回归失败，修复后 `RecoveryStorageTests` 2 项通过。实体设备重新查询仍为 unavailable，发布渠道选择仍待确认；未开始第三阶段性能重构。
 
 上述修复后的未签名 iOS Release 归档已重新生成成功，路径仍为 `.build/release-candidate/Inkstone-Correctness.xcarchive`。
+
+## 用户调整实施顺序
+
+用户已明确选择“暂不发布，继续第三阶段”，此前发布渠道等待不再阻塞代码工作。正确性版本归档保留，后续性能提交独立进行；真机验收和最终发布仍未执行。搜索、调度和附件传输的实测数据及局限见 `docs/PERFORMANCE.md`。

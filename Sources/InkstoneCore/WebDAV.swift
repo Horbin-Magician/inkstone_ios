@@ -19,13 +19,17 @@ protocol SyncRemote: Sendable {
     var identity: String { get }
     func prepare() async throws
     func manifest() async throws -> (SyncManifest, String?)
-    func download(_ hash: String) async throws -> Data
-    func upload(_ hash: String, data: Data) async throws
+    func download(_ hash: String, to file: URL) async throws
+    func upload(_ hash: String, from file: URL) async throws
     func publish(_ manifest: SyncManifest, revision: String?) async throws
 }
 private final class BoundedResponse: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     let limit: Int64
-    init(limit: Int) { self.limit = Int64(limit) }
+    let bodyFile: URL?
+    init(limit: Int, bodyFile: URL? = nil) { self.limit = Int64(limit); self.bodyFile = bodyFile }
+    func urlSession(_ session: URLSession, task: URLSessionTask, needNewBodyStream completionHandler: @escaping (InputStream?) -> Void) {
+        completionHandler(bodyFile.flatMap { InputStream(url: $0) })
+    }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         if totalBytesWritten > limit || totalBytesExpectedToWrite > limit { downloadTask.cancel() }
@@ -49,13 +53,17 @@ public final class WebDAV: SyncRemote, @unchecked Sendable {
     }
     deinit { session.invalidateAndCancel() }
     // Download tasks keep network response bodies off the heap until the size is checked.
-    private func request(_ method: String, _ path: String, body: Data? = nil, headers: [String: String] = [:], limit: Int = 8 * 1024 * 1024) async throws -> (Data, HTTPURLResponse) {
+    private func request(_ method: String, _ path: String, body: Data? = nil, bodyFile: URL? = nil, headers: [String: String] = [:], limit: Int = 8 * 1024 * 1024) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: root.appendingPathComponent(path))
         request.httpMethod = method; request.httpBody = body
+        if let bodyFile {
+            request.httpBodyStream = InputStream(url: bodyFile)
+            request.setValue(String(try SyncFile.size(bodyFile)), forHTTPHeaderField: "Content-Length")
+        }
         request.setValue(authorization, forHTTPHeaderField: "Authorization")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
-        let (file, response) = try await session.download(for: request, delegate: BoundedResponse(limit: limit))
+        let (file, response) = try await session.download(for: request, delegate: BoundedResponse(limit: limit, bodyFile: bodyFile))
         defer { try? FileManager.default.removeItem(at: file) }
         guard let response = response as? HTTPURLResponse else { throw SyncFailure("无效的 WebDAV 响应。") }
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -103,17 +111,27 @@ public final class WebDAV: SyncRemote, @unchecked Sendable {
         let bytes = Array(value.utf8)
         return bytes.count >= 2 && bytes.first == 34 && bytes.last == 34 && bytes.dropFirst().dropLast().allSatisfy { $0 == 0x21 || (0x23...0x7e).contains($0) || $0 >= 0x80 }
     }
-    func download(_ hash: String) async throws -> Data {
-        let (data, response) = try await request("GET", "inkstone/objects/" + hash, limit: 128 * 1024 * 1024)
+    func download(_ hash: String, to destination: URL) async throws {
+        var request = URLRequest(url: root.appendingPathComponent("inkstone/objects/" + hash))
+        request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let (temporary, response) = try await session.download(for: request, delegate: BoundedResponse(limit: SyncTransfer.fileLimit))
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        guard let response = response as? HTTPURLResponse else { throw SyncFailure("无效的 WebDAV 响应。") }
         try check(response)
-        guard digest(data) == hash else { throw SyncFailure("云端文件内容校验失败。") }
-        return data
+        try SyncFile.copy(temporary, to: destination, hash: hash)
     }
-    func upload(_ hash: String, data: Data) async throws {
-        guard digest(data) == hash else { throw SyncFailure("上传文件内容校验失败。") }
-        let (_, response) = try await request("PUT", "inkstone/objects/" + hash, body: data, headers: ["If-None-Match": "*", "Content-Type": "application/octet-stream"])
-        if response.statusCode == 412 { _ = try await download(hash) }
-        else { try check(response) }
+    func upload(_ hash: String, from file: URL) async throws {
+        guard try SyncFile.hash(file) == hash else { throw SyncFailure("上传文件内容校验失败。") }
+        // File-backed request streams keep the object off the heap; the response
+        // still uses a bounded download task, including oversized error responses.
+        let (_, response) = try await request("PUT", "inkstone/objects/" + hash, bodyFile: file,
+            headers: ["If-None-Match": "*", "Content-Type": "application/octet-stream"])
+        if response.statusCode == 412 {
+            let verification = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: verification) }
+            try await download(hash, to: verification)
+        } else { try check(response) }
     }
     func publish(_ manifest: SyncManifest, revision: String?) async throws {
         try manifest.validate()

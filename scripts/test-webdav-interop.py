@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix='inkstone-interop-') as temp:
     env['INKSTONE_INTEROP_URL'] = f'http://127.0.0.1:{server.server_port}/dav/'
     env['INKSTONE_INTEROP_DESKTOP'] = str(desktop / 'target/debug/inkstone-mobile-interop')
     try:
-        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter desktopHTTPInterop'], cwd=repo, env=env, check=True)
+        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter \"desktopHTTPInterop|webDAVFileTransport\"'], cwd=repo, env=env, check=True)
         manifest = json.loads(objects['/dav/inkstone/manifest.json'])
         assert manifest['version'] == 1
         print('PASS: actual Rust desktop core and Swift mobile core exchanged notes, attachments, moves, conflicts and deletions over HTTP WebDAV.')
