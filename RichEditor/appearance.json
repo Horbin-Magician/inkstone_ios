@@ -1,0 +1,22 @@
+{
+  "content-width": 760,
+  "horizontal-padding": 16,
+  "vertical-padding": 12,
+  "block-spacing": 12,
+  "list-spacing": 7,
+  "heading-top": 8,
+  "h1": 34,
+  "h2": 28,
+  "h3": 22,
+  "h4": 20,
+  "h5": 17,
+  "h6": 15,
+  "code-size": 16,
+  "code-padding": 14,
+  "code-radius": 10,
+  "image-width": 640,
+  "task-hit-size": 44,
+  "task-marker-size": 16,
+  "task-marker-stroke": 1.5,
+  "task-gap": 8
+}

@@ -13,6 +13,13 @@ struct InkstoneApp: App {
     }
 }
 enum InkTheme {
+    static var documentBackground: Color {
+        #if os(iOS)
+        Color(uiColor: .systemBackground)
+        #else
+        Color(nsColor: .textBackgroundColor)
+        #endif
+    }
     static let accent: Color = {
         #if os(iOS)
         Color(uiColor: UIColor { traits in

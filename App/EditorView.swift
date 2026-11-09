@@ -125,9 +125,11 @@ struct EditorView: View {
                                 Label("提到这篇笔记", systemImage: "link").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
                                 ForEach(backlinks) { note in Button(note.title) { navigate(to: note) } }
                             }
-                        }.padding(.horizontal, 16).padding(.vertical, 12).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity, alignment: .center)
+                        }.padding(.horizontal, MarkdownAppearance.metric("horizontal-padding")).padding(.vertical, MarkdownAppearance.metric("vertical-padding")).frame(maxWidth: MarkdownAppearance.metric("content-width"), alignment: .leading).frame(maxWidth: .infinity, alignment: .center)
                     }.textSelection(.enabled)
+                        .background(InkTheme.documentBackground)
                         .font(.system(size: readingSize * readingScale)).lineSpacing(readingSpacing)
+                        .environment(\.markdownBodySize, readingSize * readingScale)
                         .onChange(of: scrollLine) { _, line in
                             if let line { withAnimation { proxy.scrollTo(line, anchor: .top) } }
                         }

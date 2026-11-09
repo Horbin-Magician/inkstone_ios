@@ -18,6 +18,15 @@ extension EnvironmentValues {
     }
 }
 
+
+private struct MarkdownBodySizeKey: EnvironmentKey { static let defaultValue = 17.0 }
+extension EnvironmentValues {
+    var markdownBodySize: Double {
+        get { self[MarkdownBodySizeKey.self] }
+        set { self[MarkdownBodySizeKey.self] = newValue }
+    }
+}
+
 /// Native rendering of the shared Markdown tree. Parsing never rewrites the source.
 struct MarkdownReader: View {
     let blocks: [MarkdownBlock]
@@ -26,7 +35,7 @@ struct MarkdownReader: View {
     var openAttachment: (String) -> Void = { _ in }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 12) {
+        LazyVStack(alignment: .leading, spacing: MarkdownAppearance.metric("block-spacing")) {
             ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask).id(block.line) }
         }.frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.openURL, OpenURLAction { url in
@@ -46,7 +55,7 @@ struct MarkdownReader: View {
 private struct MarkdownBlocks: View {
     let blocks: [MarkdownBlock]
     var toggleTask: (Int) -> Void
-    var spacing: CGFloat = 12
+    var spacing: CGFloat = MarkdownAppearance.metric("block-spacing")
     var body: some View {
         VStack(alignment: .leading, spacing: spacing) {
             ForEach(blocks) { block in MarkdownBlockView(block: block, toggleTask: toggleTask).id(block.line) }
@@ -55,6 +64,7 @@ private struct MarkdownBlocks: View {
 }
 
 private struct MarkdownBlockView: View {
+    @Environment(\.markdownBodySize) private var bodySize
     let block: MarkdownBlock
     var toggleTask: (Int) -> Void
     private var children: some View { MarkdownBlocks(blocks: block.children, toggleTask: toggleTask) }
@@ -62,26 +72,39 @@ private struct MarkdownBlockView: View {
     var body: some View {
         switch block.kind {
         case .paragraph:
-            MarkdownInlineView(nodes: block.inline).lineSpacing(5)
+            MarkdownInlineView(nodes: block.inline)
         case .heading(let level):
             MarkdownInlineView(nodes: block.inline)
                 .font(headingFont(level)).fontWeight(.semibold)
-                .padding(.top, 8).accessibilityAddTraits(.isHeader)
+                .padding(.top, MarkdownAppearance.metric("heading-top")).accessibilityAddTraits(.isHeader)
         case .quote:
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: MarkdownAppearance.metric("block-spacing")) {
                 children.foregroundStyle(.secondary)
             }.padding(.leading, 14).padding(.vertical, 6)
                 .overlay(alignment: .leading) { Rectangle().fill(InkTheme.accent.opacity(0.55)).frame(width: 3) }
         case .list:
-            MarkdownBlocks(blocks: block.children, toggleTask: toggleTask, spacing: 7)
+            MarkdownBlocks(blocks: block.children, toggleTask: toggleTask, spacing: MarkdownAppearance.metric("list-spacing"))
         case .item(let marker, let checked):
-            HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: checked == nil ? .firstTextBaseline : .top, spacing: MarkdownAppearance.metric("task-gap")) {
                 if let checked {
                     Button { toggleTask(block.line) } label: {
-                        Image(systemName: checked ? "checkmark.circle.fill" : "circle").frame(minWidth: 44, minHeight: 44)
+                        ZStack {
+                            Circle().strokeBorder(InkTheme.accent, lineWidth: MarkdownAppearance.metric("task-marker-stroke"))
+                            if checked {
+                                Circle().fill(InkTheme.accent)
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 10 * bodySize / 17, weight: .semibold))
+                                    .foregroundStyle(InkTheme.surface)
+                            }
+                        }
+                            .frame(width: MarkdownAppearance.metric("task-marker-size") * bodySize / 17,
+                                   height: MarkdownAppearance.metric("task-marker-size") * bodySize / 17)
+                            .frame(width: MarkdownAppearance.metric("task-hit-size"), height: MarkdownAppearance.metric("task-hit-size"))
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(InkTheme.accent)
                         .accessibilityLabel(checked ? "取消完成任务" : "完成任务")
-                    children.strikethrough(checked).padding(.top, 5)
+                    children.strikethrough(checked)
+                        .padding(.vertical, max(0, (MarkdownAppearance.metric("task-hit-size") - bodySize * 1.2) / 2))
                 } else {
                     Text(marker).monospacedDigit().foregroundStyle(InkTheme.accent).frame(minWidth: 22, alignment: .trailing)
                     children
@@ -103,9 +126,9 @@ private struct MarkdownBlockView: View {
                 }
                 ScrollView(.horizontal) {
                     Text(block.text.hasSuffix("\n") ? String(block.text.dropLast()) : block.text)
-                        .font(.system(.callout, design: .monospaced)).fixedSize(horizontal: true, vertical: true)
+                        .font(.system(size: MarkdownAppearance.metric("code-size") * bodySize / 17, design: .monospaced)).fixedSize(horizontal: true, vertical: true)
                 }
-            }.padding(14).background(InkTheme.background, in: RoundedRectangle(cornerRadius: 10))
+            }.padding(MarkdownAppearance.metric("code-padding")).background(InkTheme.background, in: RoundedRectangle(cornerRadius: MarkdownAppearance.metric("code-radius")))
         case .table:
             ScrollView(.horizontal) {
                 Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
@@ -130,14 +153,7 @@ private struct MarkdownBlockView: View {
         }
     }
     private func headingFont(_ level: Int) -> Font {
-        switch level {
-        case 1: return .largeTitle
-        case 2: return .title
-        case 3: return .title2
-        case 4: return .title3
-        case 5: return .headline
-        default: return .subheadline
-        }
+        .system(size: MarkdownAppearance.metric("h\(min(6, max(1, level)))") * bodySize / 17)
     }
     private func cellAlignment(_ cell: MarkdownBlock) -> Alignment {
         guard case .cell(let alignment) = cell.kind else { return .leading }
@@ -146,6 +162,7 @@ private struct MarkdownBlockView: View {
 }
 
 private struct MarkdownInlineView: View {
+    @Environment(\.markdownBodySize) private var bodySize
     let nodes: [MarkdownInline]
     // Keep text in one attributed run; separate images to preserve native resizing and alt text.
     private var segments: [[MarkdownInline]] {
@@ -181,7 +198,7 @@ private struct MarkdownInlineView: View {
             switch node {
             case .text(let text): part = AttributedString(text)
             case .code(let text):
-                part = AttributedString(text); part.font = .system(.body, design: .monospaced)
+                part = AttributedString(text); part.font = .system(size: bodySize, design: .monospaced)
                 part.backgroundColor = .secondary.opacity(0.12)
             case .emphasis(let children): part = applying(.emphasized, to: attributed(children))
             case .strong(let children): part = applying(.stronglyEmphasized, to: attributed(children))
@@ -213,12 +230,12 @@ private struct MarkdownImage: View {
                 Image(decorative: thumbnail, scale: displayScale).resizable().scaledToFit()
                     .accessibilityLabel(alt.isEmpty ? "图片" : alt)
             } else { placeholder }
-        }.frame(maxWidth: 640)
+        }.frame(maxWidth: MarkdownAppearance.metric("image-width"))
         .task(id: Request(source: source, scale: displayScale, context: context)) {
             thumbnail = nil; failed = false
             do {
                 let load = loader
-                let preview = try await ImagePreviewPipeline.shared.preview(source: source, context: context, maxPixelSize: Int(640 * displayScale)) { source in
+                let preview = try await ImagePreviewPipeline.shared.preview(source: source, context: context, maxPixelSize: Int(MarkdownAppearance.metric("image-width") * displayScale)) { source in
                     guard let load else { throw VaultError.invalidPath }
                     return try await load(source)
                 }

@@ -4,26 +4,41 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src https: http: inkstone-attachment:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <title>富文本编辑</title>
 <style>
-:root { color-scheme: light dark; --body-size: 17px; --line-spacing: 5px; --accent: #316b62; --background: #fff; --text: #202423; --muted: #6e7572; --line: #dde3df; --panel: #f3f6f3; }
-@media (prefers-color-scheme: dark) { :root { --accent: #8bc8b9; --background: #1c1c1e; --text: #eee; --muted: #a5ada8; --line: #3c4440; --panel: #272c29; } }
+/* shared-appearance */
+:root { color-scheme: light dark; --body-size: 17px; --line-spacing: 5px; --text-scale: 1; --accent: #24758a; --background: #fff; --text: #202423; --muted: #6e7572; --line: #dde3df; --panel: #f2f2f7; }
+@media (prefers-color-scheme: dark) { :root { --accent: #73bfd1; --background: #1c1c1e; --text: #eee; --muted: #a5ada8; --line: #3c4440; --panel: #000; } }
 * { box-sizing: border-box; } body { margin: 0; background: var(--background); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
-#toolbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 5px; overflow-x: auto; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--background); -webkit-overflow-scrolling: touch; }
-button { flex: 0 0 auto; min-height: 36px; padding: 6px 11px; border: 0; border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; font-size: 14px; touch-action: manipulation; }
-button[aria-pressed=true] { background: var(--accent); color: var(--background); } button:disabled { opacity: .35; } button:focus-visible { outline: 2px solid var(--accent); }
-#editor { max-width: 800px; margin: auto; padding: 12px 18px 80px; }
-.ProseMirror { outline: none; min-height: 65vh; white-space: pre-wrap; overflow-wrap: break-word; font-size: var(--body-size); line-height: calc(1.5em + var(--line-spacing)); -webkit-text-size-adjust: 100%; }
-.ProseMirror p { margin: 0 0 .8em; } .ProseMirror h1 { font-size: 1.9em; } .ProseMirror h2 { font-size: 1.5em; } .ProseMirror h3 { font-size: 1.25em; } .ProseMirror h1, .ProseMirror h2, .ProseMirror h3 { line-height: 1.3; margin: .65em 0 .45em; }
-.ProseMirror blockquote { border-left: 3px solid var(--accent); color: var(--muted); margin: 12px 0; padding-left: 14px; }
-.ProseMirror ul, .ProseMirror ol { padding-left: 28px; } .ProseMirror li p { margin-bottom: .25em; }
-.ProseMirror li.task { position: relative; list-style: none; } .task > input { position: absolute; left: -26px; top: 5px; width: 19px; height: 19px; accent-color: var(--accent); }
-.ProseMirror pre { background: var(--panel); padding: 12px; border-radius: 8px; white-space: pre-wrap; } code { font-family: ui-monospace, monospace; font-size: .9em; background: var(--panel); border-radius: 3px; }
-.ProseMirror a, .wiki { color: var(--accent); text-decoration: underline; } img { max-width: 100%; height: auto; } hr { border: 0; border-top: 1px solid var(--line); }
-table { border-collapse: collapse; width: 100%; table-layout: fixed; } th, td { border: 1px solid var(--line); padding: 8px; vertical-align: top; position: relative; min-width: 40px; } th { background: var(--panel); } .selectedCell:after { content: ''; position: absolute; inset: 0; background: #78af9c40; pointer-events: none; }
+button { min-height: 36px; padding: 6px 11px; border: 0; border-radius: 7px; background: var(--panel); color: var(--text); font: inherit; }
+#editor { max-width: var(--content-width); margin: auto; padding: var(--vertical-padding) var(--horizontal-padding) 80px; }
+.ProseMirror { outline: none; min-height: 65vh; white-space: pre-wrap; overflow-wrap: break-word; font-size: var(--body-size); line-height: calc(1.2em + var(--line-spacing)); -webkit-text-size-adjust: 100%; }
+.ProseMirror p, .ProseMirror ul, .ProseMirror ol, .ProseMirror blockquote, .ProseMirror pre, .ProseMirror table { margin: 0; }
+.ProseMirror > :not(:first-child), .ProseMirror blockquote > :not(:first-child), .ProseMirror li > div > :not(:first-child) { margin-top: var(--block-spacing); }
+.ProseMirror h1 { font-size: calc(var(--h1) * var(--text-scale)); } .ProseMirror h2 { font-size: calc(var(--h2) * var(--text-scale)); } .ProseMirror h3 { font-size: calc(var(--h3) * var(--text-scale)); } .ProseMirror h4 { font-size: calc(var(--h4) * var(--text-scale)); } .ProseMirror h5 { font-size: calc(var(--h5) * var(--text-scale)); } .ProseMirror h6 { font-size: calc(var(--h6) * var(--text-scale)); }
+.ProseMirror :is(h1,h2,h3,h4,h5,h6) { font-weight: 600; line-height: 1.2; margin-bottom: 0; padding-top: var(--heading-top); }
+.ProseMirror > :first-child { margin-top: 0; }
+.ProseMirror blockquote { border-left: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); color: var(--muted); padding: 6px 0 6px 11px; }
+.ProseMirror ul, .ProseMirror ol { padding-left: 30px; } .ProseMirror li + li { margin-top: var(--list-spacing); } .ProseMirror li::marker { color: var(--accent); }
+/* Match the native reader's task geometry, without platform checkbox chrome. */
+.ProseMirror li.task { position: relative; list-style: none; margin-left: -30px; padding-left: calc(var(--task-hit-size) + var(--task-gap)); min-height: var(--task-hit-size); }
+.task > input { appearance: none; -webkit-appearance: none; position: absolute; margin: 0; left: 0; top: 0; width: var(--task-hit-size); height: var(--task-hit-size); border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+.task > input::before { content: ''; position: absolute; width: calc(var(--task-marker-size) * var(--text-scale)); height: calc(var(--task-marker-size) * var(--text-scale)); left: 50%; top: 50%; transform: translate(-50%, -50%); border: var(--task-marker-stroke) solid currentColor; border-radius: 50%; }
+.task > input:checked::before { background: currentColor; }
+.task > input:checked::after { content: ''; position: absolute; left: 50%; top: 50%; width: calc(4px * var(--text-scale)); height: calc(7px * var(--text-scale)); border: solid var(--background); border-width: 0 1.5px 1.5px 0; transform: translate(-50%, -65%) rotate(45deg); }
+.task > input:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.task > div { padding-top: max(0px, calc((var(--task-hit-size) - 1.2em - var(--line-spacing)) / 2)); padding-bottom: max(0px, calc((var(--task-hit-size) - 1.2em + var(--line-spacing)) / 2)); }
+/* SwiftUI adds line spacing between lines, not after the last line. */
+.task > div > p:last-child { margin-bottom: calc(-1 * var(--line-spacing)); }
+.task:has(> input:checked) > div { text-decoration: line-through; }
+
+.ProseMirror pre { background: var(--panel); padding: var(--code-padding); border-radius: var(--code-radius); white-space: pre; overflow-x: auto; }
+code { font-family: ui-monospace, monospace; font-size: 1em; background: var(--inline-code, var(--panel)); } pre code { background: transparent; font-size: calc(var(--code-size) * var(--text-scale)); }
+.ProseMirror a, .wiki { color: var(--accent); text-decoration: underline; } img { max-width: min(100%, var(--image-width)); height: auto; } hr { border: 0; border-top: 1px solid var(--line); margin-bottom: 6px; }
+table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; } th, td { border: .5px solid var(--line); padding: 10px; vertical-align: top; position: relative; min-width: 110px; max-width: 300px; } th { background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 600; } td { background: color-mix(in srgb, var(--muted) 2%, transparent); } tr:nth-child(odd) td { background: color-mix(in srgb, var(--muted) 6%, transparent); } .selectedCell:after { content: ''; position: absolute; inset: 0; background: #78af9c40; pointer-events: none; }
 .raw-block { border: 1px dashed var(--line); color: var(--muted); padding: 8px 12px; border-radius: 8px; margin: 10px 0; } .raw-block pre { max-height: 100px; overflow: auto; margin: 6px 0 0; font-size: 12px; } .raw-block small { font-size: 12px; }
 .ProseMirror-selectednode { outline: 2px solid var(--accent); } .ProseMirror-hideselection *::selection { background: transparent; }
 #status { color: var(--muted); font-size: 13px; padding: 0 16px; } #status:empty { display: none; }
 dialog { width: min(90vw, 420px); padding: 22px; border: 1px solid var(--line); border-radius: 14px; background: var(--background); color: var(--text); } dialog::backdrop { background: #0005; } dialog h2 { margin-top: 0; font-size: 20px; } label { display: block; margin: 12px 0; font-size: 14px; } input[type=text] { display: block; margin-top: 6px; padding: 10px; width: 100%; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; } #link-error { font-size: 12px; color: #bb4040; }
 </style></head><body>
-<div id="toolbar" role="toolbar" aria-label="文字格式"></div><div id="status" role="status"></div><main id="editor"></main>
+<div id="status" role="status"></div><main id="editor"></main>
 <dialog id="link-dialog"><form id="link-form"><h2>插入链接</h2><label>地址或 [[笔记路径]]<input id="link-url" type="text" autocomplete="off" list="note-targets" required><datalist id="note-targets"></datalist></label><label>显示文字<input id="link-label" type="text"></label><p id="link-error"></p><button type="button" id="cancel-link">取消</button> <button type="submit">确定</button></form></dialog>
 <script src="editor.js"></script></body></html>

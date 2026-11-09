@@ -12,9 +12,8 @@ let frozen = false, editorEnabled = true, imageContext = "";
 let publishTimer, serializedRevision = -1, serializedText;
 const post = value => window.webkit?.messageHandlers.richEditor.postMessage({...value, session});
 const editor = document.querySelector('#editor');
-const toolbar = document.querySelector('#toolbar');
 const status = document.querySelector('#status');
-const buttons = new Map();
+const commands = new Map();
 
 function snapshot() {
   if (serializedRevision !== revision) {
@@ -27,7 +26,6 @@ function snapshot() {
 function schedulePublish() {
   // Bound latency during continuous typing while coalescing bursts of transactions.
   if (publishTimer == null) publishTimer = setTimeout(publish, 50);
-  updateToolbar();
 }
 function publish() {
   clearTimeout(publishTimer); publishTimer = null;
@@ -35,31 +33,15 @@ function publish() {
   // Input notifications carry versions only. Native save/navigation explicitly
   // requests flush(), which is the sole full-text snapshot boundary.
   post({type: 'change', revision, composing: composition || view.composing});
-  updateToolbar();
 }
 function run(command) {
   if (!view || composition || view.composing) return;
   command(view.state, view.dispatch, view);
   view.focus();
 }
-function button(label, title, command, active) {
-  const element = document.createElement('button');
-  element.type = 'button'; element.textContent = label; element.title = title; element.setAttribute('aria-label', title);
-  element.addEventListener('pointerdown', event => event.preventDefault());
-  element.addEventListener('click', () => run(command));
-  toolbar.appendChild(element);
-  buttons.set(title, {element, command, active});
-}
-function markActive(type) {
-  const {from, to, empty, $from} = view.state.selection;
-  return empty ? !!type.isInSet(view.state.storedMarks || $from.marks()) : view.state.doc.rangeHasMark(from, to, type);
-}
-function updateToolbar() {
-  if (!view) return;
-  buttons.forEach(({element, command, active}) => {
-    element.disabled = composition || view.composing || !command(view.state);
-    if (active) element.setAttribute('aria-pressed', String(active()));
-  });
+function register(label, title, command) { commands.set(title, command); }
+function canRun(title) {
+  return !!view && !composition && !view.composing && !frozen && editorEnabled && !!commands.get(title)?.(view.state);
 }
 function block(type, attrs) { return setBlockType(schema.nodes[type], attrs); }
 function list(type) {
@@ -90,19 +72,19 @@ function task(state, dispatch) {
     dispatch(tr);
   }));
 }
-button('正文', '正文', block('paragraph'));
-for (let level = 1; level <= 3; level++) button('H' + level, level + ' 级标题', block('heading', {level}));
+register('正文', '正文', block('paragraph'));
+for (let level = 1; level <= 3; level++) register('H' + level, level + ' 级标题', block('heading', {level}));
 for (const [name, label, title] of [['strong', 'B', '加粗'], ['em', 'I', '斜体'], ['strike', 'S', '删除线'], ['code', '</>', '行内代码']]) {
-  button(label, title, toggleMark(schema.marks[name]), () => markActive(schema.marks[name]));
+  register(label, title, toggleMark(schema.marks[name]));
 }
-button('• 列表', '无序列表', list('bullet_list'));
-button('1. 列表', '有序列表', list('ordered_list'));
-button('☑ 待办', '待办列表', task);
-button('引用', '引用', chainCommands(wrapIn(schema.nodes.blockquote), lift));
-button('代码块', '代码块', block('code_block'));
-button('缩进', '增加列表缩进', sinkListItem(schema.nodes.list_item));
-button('退格', '减少列表缩进', liftListItem(schema.nodes.list_item));
-button('链接', '插入或修改链接', (state, dispatch) => {
+register('• 列表', '无序列表', list('bullet_list'));
+register('1. 列表', '有序列表', list('ordered_list'));
+register('☑ 待办', '待办列表', task);
+register('引用', '引用', chainCommands(wrapIn(schema.nodes.blockquote), lift));
+register('代码块', '代码块', block('code_block'));
+register('缩进', '增加列表缩进', sinkListItem(schema.nodes.list_item));
+register('退格', '减少列表缩进', liftListItem(schema.nodes.list_item));
+register('链接', '插入或修改链接', (state, dispatch) => {
   if (!dispatch) return true;
   const dialog = document.querySelector('#link-dialog');
   const current = schema.marks.link.isInSet(state.selection.$from.marks());
@@ -111,12 +93,12 @@ button('链接', '插入或修改链接', (state, dispatch) => {
   dialog.showModal();
   return true;
 });
-button('取消链接', '取消链接', (state, dispatch) => {
+register('取消链接', '取消链接', (state, dispatch) => {
   if (state.selection.empty) return false;
   if (dispatch) dispatch(state.tr.removeMark(state.selection.from, state.selection.to, schema.marks.link));
   return true;
 });
-button('表格', '插入表格', (state, dispatch) => {
+register('表格', '插入表格', (state, dispatch) => {
   if (dispatch) {
     const row = header => schema.nodes.table_row.create(null, Array.from({length: 2}, () =>
       (header ? schema.nodes.table_header : schema.nodes.table_cell).create(null, schema.nodes.paragraph.create())));
@@ -124,19 +106,17 @@ button('表格', '插入表格', (state, dispatch) => {
   }
   return true;
 });
-button('+行', '表格添加行', addRowAfter);
-button('+列', '表格添加列', addColumnAfter);
-button('删行', '表格删除行', deleteRow);
-button('删列', '表格删除列', deleteColumn);
-button('删表', '删除表格', deleteTable);
-button('撤销', '撤销', undo);
-button('重做', '重做', redo);
-button('完成', '收起键盘', (state, dispatch) => {
+register('+行', '表格添加行', addRowAfter);
+register('+列', '表格添加列', addColumnAfter);
+register('删行', '表格删除行', deleteRow);
+register('删列', '表格删除列', deleteColumn);
+register('删表', '删除表格', deleteTable);
+register('撤销', '撤销', undo);
+register('重做', '重做', redo);
+register('完成', '收起键盘', (state, dispatch) => {
   if (dispatch) { view.dom.blur(); post({type: 'focus', focused: false}); }
   return true;
 });
-// run() normally restores the caret; the last action deliberately dismisses it.
-buttons.get('收起键盘').element.addEventListener('click', () => view.dom.blur());
 
 document.querySelector('#link-form').addEventListener('submit', event => {
   event.preventDefault();
@@ -214,7 +194,6 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
         const result = view.state.applyTransaction(tr);
         view.updateState(result.state);
         if (result.transactions.some(transaction => transaction.docChanged)) { revision++; schedulePublish(); }
-        else updateToolbar();
       },
       handlePaste(editorView, event) {
         const file = Array.from(event.clipboardData?.files || []).find(file => file.type.startsWith('image/'));
@@ -230,19 +209,18 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
         return true;
       },
       handleDOMEvents: {
-        compositionstart() { composition = true; post({type: 'composition', composing: true}); updateToolbar(); return false; },
+        compositionstart() { composition = true; post({type: 'composition', composing: true}); return false; },
         compositionend() { setTimeout(() => { composition = false; publish(); }, 0); return false; },
         focus() { post({type: 'focus', focused: true}); return false; },
         blur() { setTimeout(publish, 0); post({type: 'focus', focused: false}); return false; },
         click(_, event) { if (event.target.closest('a')) event.preventDefault(); return false; }
       }
     });
-    status.textContent = ''; updateToolbar();
+    status.textContent = '';
     return true;
   } catch (error) {
     if (view) view.destroy();
     view = null; editor.replaceChildren(); session = token;
-    buttons.forEach(({element}) => { element.disabled = true; });
     status.textContent = '富文本加载失败，请切换到源码编辑。';
     post({type: 'error', message: String(error)}); return false;
   }
@@ -272,8 +250,13 @@ window.inkstone = {
     } else initialize(source, token);
   },
   focus(focused) { if (view) { if (focused) view.focus(); else view.dom.blur(); } },
-  setEnabled(enabled) { editorEnabled = enabled; if (view) view.setProps({editable: () => enabled && !frozen}); toolbar.inert = !enabled || frozen; },
-  setAppearance(size, spacing) { document.documentElement.style.setProperty('--body-size', size + 'px'); document.documentElement.style.setProperty('--line-spacing', spacing + 'px'); },
+  setEnabled(enabled) { editorEnabled = enabled; if (view) view.setProps({editable: () => enabled && !frozen}); },
+  setPalette(colors) {
+    for (const key of ['accent', 'background', 'text', 'muted', 'line', 'panel', 'inline-code']) {
+      if (colors[key]) document.documentElement.style.setProperty('--' + key, colors[key]);
+    }
+  },
+  setAppearance(size, spacing) { document.documentElement.style.setProperty('--body-size', size + 'px'); document.documentElement.style.setProperty('--text-scale', size / 17); document.documentElement.style.setProperty('--line-spacing', spacing + 'px'); },
   setImageContext(context) {
     if (context === imageContext) return;
     imageContext = context;
@@ -291,6 +274,8 @@ window.inkstone = {
     }
     imageBookmark = null;
   },
+  canRun,
+  command(title) { if (!canRun(title)) return false; run(commands.get(title)); return true; },
   // The test harness uses the same commands and state as the shipped editor.
   get view() { return view; },
   select(from, to = from) { view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to))); }

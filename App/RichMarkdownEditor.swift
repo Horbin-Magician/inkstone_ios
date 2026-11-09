@@ -61,6 +61,24 @@ typealias RichEditorRepresentable = NSViewRepresentable
 #endif
 
 struct RichMarkdownEditor: RichEditorRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
+    private var palette: [String: String] {
+        let colors: [String: Color] = ["accent": InkTheme.accent, "background": InkTheme.documentBackground,
+            "text": .primary, "muted": .secondary, "line": .secondary.opacity(0.18), "panel": InkTheme.background, "inline-code": .secondary.opacity(0.12)]
+        return colors.mapValues { color in
+            #if os(iOS)
+            let resolved = UIColor(color).resolvedColor(with: UITraitCollection(userInterfaceStyle: colorScheme == .dark ? .dark : .light))
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            #else
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)?.performAsCurrentDrawingAppearance {
+                NSColor(color).usingColorSpace(.deviceRGB)?.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            }
+            #endif
+            return "rgba(\(red * 255), \(green * 255), \(blue * 255), \(alpha))"
+        }
+    }
     @Binding var text: String
     @Binding var focused: Bool
     @Binding var composing: Bool
@@ -127,6 +145,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var lastFocus: Bool?
         var lastEnabled: Bool?
         var appearance: [Double] = []
+        var lastPalette: [String: String] = [:]
         var lastTitles: [String] = []
         init(_ parent: RichMarkdownEditor) {
             self.parent = parent
@@ -154,6 +173,9 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             }
             if lastEnabled != enabled {
                 lastEnabled = enabled; call("setEnabled", [enabled])
+            }
+            if lastPalette != parent.palette {
+                lastPalette = parent.palette; call("setPalette", [lastPalette])
             }
             if appearance != [parent.fontSize, parent.lineSpacing] {
                 appearance = [parent.fontSize, parent.lineSpacing]; call("setAppearance", appearance)
