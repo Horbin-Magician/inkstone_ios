@@ -6,6 +6,8 @@ import {keymap} from 'prosemirror-keymap';
 import {wrapInList, splitListItem, sinkListItem, liftListItem} from 'prosemirror-schema-list';
 import {tableEditing, goToNextCell, addRowAfter, deleteRow, addColumnAfter, deleteColumn, deleteTable} from 'prosemirror-tables';
 import {schema, loadMarkdown, saveMarkdown} from './model.js';
+import {undoInputRule} from 'prosemirror-inputrules';
+import {markdownInputRules} from './input-rules.js';
 
 let loaded, view, session, revision = 0, lastSource, imageBookmark, composition = false;
 let frozen = false, editorEnabled = true, imageContext = "";
@@ -173,7 +175,8 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
     session = token; lastSource = source; composition = false; imageBookmark = null;
     if (view) view.destroy();
     view = new EditorView(editor, {
-      state: EditorState.create({doc: loaded.doc, plugins: [history(), keymap({
+      state: EditorState.create({doc: loaded.doc, plugins: [history(), markdownInputRules(), keymap({
+        Backspace: undoInputRule,
         'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
         'Mod-b': toggleMark(schema.marks.strong), 'Mod-i': toggleMark(schema.marks.em),
         Enter: (state, dispatch) => {
