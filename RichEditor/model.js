@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it';
+import {markdownExtensions} from './extensions.js';
 import {Schema} from 'prosemirror-model';
 import {schema as baseSchema, defaultMarkdownParser, defaultMarkdownSerializer, MarkdownParser, MarkdownSerializer} from 'prosemirror-markdown';
 import {tableNodes} from 'prosemirror-tables';
@@ -12,7 +13,18 @@ nodes = nodes.append(tableNodes({tableGroup: 'block', cellContent: 'paragraph+',
   align: {default: null, getFromDOM: dom => dom.style.textAlign || null,
     setDOMAttr: (value, attrs) => { if (value) attrs.style = `text-align: ${value}`; }}
 }}));
+nodes = nodes.update('blockquote', {...nodes.get('blockquote'), attrs: {callout: {default: null}},
+  toDOM: node => ['blockquote', node.attrs.callout ? {'data-callout': JSON.stringify(node.attrs.callout)} : {}, 0],
+  parseDOM: [{tag: 'blockquote', getAttrs: dom => {
+    try {
+      const value = JSON.parse(dom.getAttribute('data-callout'));
+      return {callout: value && /^[\w-]+$/.test(value.type) && ['', '+', '-'].includes(value.fold) && typeof value.title === 'string' ? value : null};
+    } catch { return {callout: null}; }
+  }}]
+});
 nodes = nodes.append({
+  math_inline: {inline: true, group: 'inline', content: 'text*', marks: '', code: true, parseDOM: [{tag: 'span.math-inline', preserveWhitespace: 'full'}], toDOM: () => ['span', {class: 'math-inline'}, 0]},
+  math_block: {group: 'block', content: 'text*', marks: '', code: true, parseDOM: [{tag: 'div.math-block', preserveWhitespace: 'full'}], toDOM: () => ['div', {class: 'math-block'}, 0]},
   raw_block: {group: 'block', atom: true, attrs: {source: {}, label: {default: '特殊语法 · 可在源码模式编辑'}},
     toDOM: node => ['div', {class: 'raw-block', contenteditable: 'false'}, ['small', node.attrs.label], ['pre', node.attrs.source]]},
   raw_inline: {inline: true, group: 'inline', atom: true, attrs: {source: {}},
@@ -27,7 +39,7 @@ nodes.forEach((name, spec) => {
 const marks = baseSchema.spec.marks.append({strike: {parseDOM: [{tag: 's'}, {tag: 'del'}], toDOM: () => ['s']}});
 export const schema = new Schema({nodes, marks});
 
-const tokenizer = new MarkdownIt('default', {html: true, linkify: false, typographer: false});
+const tokenizer = new MarkdownIt('default', {html: true, linkify: false, typographer: false}).use(markdownExtensions);
 export function obsidianImage(content) {
   const [target, size = ''] = content.split('|', 2);
   if (!/\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif|avif|svg)$/i.test(target)) return null;
@@ -77,6 +89,9 @@ const cellAttrs = token => ({align: token.attrGet('style')?.replace('text-align:
 // accepts an environment, so each load supplies its own tokens without shared cache.
 const parser = new MarkdownParser(schema, {parse: (_source, environment) => environment.tokens}, {
   ...defaultMarkdownParser.tokens,
+  math_inline: {block: 'math_inline', noCloseToken: true},
+  math_block: {block: 'math_block', noCloseToken: true},
+  blockquote: {block: 'blockquote', getAttrs: token => ({callout: token.meta?.callout || null})},
   list_item: {block: 'list_item', getAttrs: token => ({checked: token.meta?.checked ?? null})},
   s: {mark: 'strike'},
   table: {block: 'table'}, thead: {ignore: true}, tbody: {ignore: true}, tr: {block: 'table_row'},
@@ -96,6 +111,16 @@ for (const name of ['th', 'td']) {
 
 export const serializer = new MarkdownSerializer({
   ...defaultMarkdownSerializer.nodes,
+  math_inline(state, node) { state.write('$' + node.textContent + '$'); },
+  math_block(state, node) { state.write('$$\n' + node.textContent + '\n$$'); state.closeBlock(node); },
+  blockquote(state, node) {
+    if (!node.attrs.callout) return defaultMarkdownSerializer.nodes.blockquote(state, node);
+    const {type, fold, title} = node.attrs.callout;
+    state.wrapBlock('> ', null, node, () => {
+      state.write('[!' + type.toUpperCase() + ']' + fold + (title === type.toUpperCase() ? '' : ' ' + title));
+      state.ensureNewLine(); state.renderContent(node);
+    });
+  },
   image(state, node) {
     if (node.attrs.src.startsWith('inkstone-embed:')) state.write('![[' + decodeURIComponent(node.attrs.src.slice('inkstone-embed:'.length)) + ']]');
     else defaultMarkdownSerializer.nodes.image(state, node);
@@ -125,7 +150,7 @@ export const serializer = new MarkdownSerializer({
     for (const row of rows) { state.write(row); state.ensureNewLine(); }
     state.closeBlock(node);
   }
-}, {...defaultMarkdownSerializer.marks, strike: {open: '~~', close: '~~', mixable: true, expelEnclosingWhitespace: true}});
+}, {...defaultMarkdownSerializer.marks, strike: {open: '~~', close: '~~', mixable: true, expelEnclosingWhitespace: true}}, {escapeExtraCharacters: /\$/g});
 
 function raw(source, label) { return schema.nodes.raw_block.create({source, label}); }
 

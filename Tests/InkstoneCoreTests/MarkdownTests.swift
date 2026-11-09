@@ -156,3 +156,37 @@ struct ObsidianImageTests {
         await #expect(throws: (any Error).self) { try await vault.attachment(unsafe, from: "test.md") }
     }
 }
+
+struct MarkdownExtensionTests {
+    @Test func mathProtectsTeXAndRetainsTaskLineNumbers() {
+        let source = "前 $x_1 + \\alpha$ 后\r\n\r\n$$\r\n\\frac{a}{b}\r\n$$\r\n\r\n- [ ] task"
+        let document = MarkdownDocument(source)
+        #expect(document.blocks[0].inline.contains { if case .math("x_1 + \\alpha", false) = $0 { return true }; return false })
+        #expect(document.blocks[1].inline.contains { if case .math("\\frac{a}{b}", true) = $0 { return true }; return false })
+        #expect(document.togglingTask(at: 6) == source.replacingOccurrences(of: "[ ]", with: "[x]"))
+    }
+    @Test func mathIgnoresCodeEscapesCurrencyAndMetadata() {
+        for source in [#"\$x$"#, "$20 and $30", "`$x$`", "```tex\n$x$\n```", "$$\nnot closed", "$ x $", "---\na: $x$\n---\ntext"] {
+            let document = MarkdownDocument(source)
+            #expect(!document.blocks.flatMap(\.inline).contains { if case .math = $0 { return true }; return false }, "\(source)")
+        }
+    }
+    @Test func mathPreservesEscapedDollarAndDoesNotChangeWikiTargets() {
+        let document = MarkdownDocument(#"中文 $a\$b$ 和 $x_2$ [[价格$x$|别名]]"#)
+        let formulas = document.blocks[0].inline.compactMap { node -> String? in
+            if case .math(let value, _) = node { return value }; return nil
+        }
+        #expect(formulas == [#"a\$b"#, "x_2"])
+        #expect(document.links == [WikiLink(target: "价格$x$", label: "别名")])
+    }
+    @Test func calloutHasTitleFoldAndNestedContent() {
+        let source = "> [!WARNING]- 注意\n> 内容\n>\n> > [!TIP]+\n> > 提示\n>\n> - [ ] task"
+        let document = MarkdownDocument(source)
+        #expect(document.blocks[0].callout?.type == "warning")
+        #expect(document.blocks[0].callout?.title == "注意")
+        #expect(document.blocks[0].callout?.expanded == false)
+        #expect(document.blocks[0].children[0].inline.map(\.plainText).joined() == "内容")
+        #expect(document.blocks[0].children[1].callout?.type == "tip")
+        #expect(document.togglingTask(at: 6).contains("[x] task"))
+    }
+}

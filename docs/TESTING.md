@@ -161,3 +161,12 @@
 - 北京时间 18:15:22 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。
 - App Store Connect 网页当前未登录，尚未确认 Apple 处理完成、测试组可下载或外部测试审核状态；未进行 App Store 正式版提审。
 - 归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-6/`。真机中文输入法、文件提供商、分享扩展和真实网络验收仍需执行。
+
+## Markdown 扩展格式（2026-11-09）
+
+- 新增 KaTeX 行内／块公式、Mermaid 围栏图表、highlight.js 代码着色和 Obsidian Callout（类型、标题、嵌套、默认展开／折叠），覆盖阅读与富文本编辑。
+- `bash scripts/check.sh`：130 项 Swift 测试通过，包含公式中的反斜线／转义美元符号、Wiki 目标不被公式解析改写、CRLF 任务行号、嵌套 Callout；共享 macOS 视图编译及 plist 检查通过。
+- `cd RichEditor && npm test`：31 项通过，覆盖未修改块字节保留、修改后的公式／Callout 序列化，以及普通转义美元文本不会在再次打开时变成公式。
+- `cd RichEditor && npx playwright test --workers=4`：51 项通过，2 项原有测试跳过。新增 WebKit 验证包括离线资源请求、公式点击编辑和撤销、着色代码编辑、图表生成／错误回退、Callout 折叠、键入语法转换和阅读片段高度回传。手机宽度截图已检查。
+- iOS Simulator Debug 无签名构建通过。本机 WKWebView 使用 `loadFileURL` 加载实际打包资源，公式、字体、Swift 高亮、Mermaid SVG 与高度计算通过；不依赖 HTTP 测试服务器或 CDN。
+- 尚未完成真机输入法、VoiceOver 和长篇含大量图表笔记的性能验收。

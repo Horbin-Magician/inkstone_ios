@@ -5,6 +5,17 @@ export function markdownInputRules() {
   const {paragraph, bullet_list, ordered_list, blockquote, heading, code_block, list_item, horizontal_rule} = schema.nodes;
   const bullet = wrappingInputRule(/^ {0,3}[-+*] $/, bullet_list);
   const rules = [
+    new InputRule(/\$([^\s$](?:[^$\n]*?[^\s$])?)\$$/, (state, match, start, end) => {
+      if (start > 0 && state.doc.textBetween(start - 1, start) === '\\') return null;
+      return state.tr.replaceWith(start, end, schema.nodes.math_inline.create(null, schema.text(match[1])));
+    }),
+    textblockTypeInputRule(/^\$\$ $/, schema.nodes.math_block),
+    new InputRule(/^\[!([\w-]+)\]([+-])? $/, (state, match, start, end) => {
+      const pos = state.selection.$from;
+      if (pos.depth < 2 || pos.node(-1).type !== blockquote || pos.index(-1) !== 0) return null;
+      return state.tr.delete(start, end).setNodeMarkup(pos.before(pos.depth - 1), null,
+        {...pos.node(-1).attrs, callout: {type: match[1].toLowerCase(), fold: match[2] || '', title: match[1].toUpperCase()}});
+    }),
     bullet,
     wrappingInputRule(/^ {0,3}(\d{1,9})[.)] $/, ordered_list,
       match => ({order: Number(match[1])}),

@@ -130,3 +130,44 @@ test('Obsidian code, escaped embeds and non-image embeds remain literal', () => 
 test('Obsidian sizes allow padding used by existing notes', () => {
   assert.deepEqual(obsidianImage('/附件/photo.png| 500 '), {target: '/附件/photo.png', width: '500', height: undefined});
 });
+
+test('math protects TeX syntax and round trips edited formulas', () => {
+  const source = '前 $x_1 + \\alpha$ 后\r\n\r\n$$\r\n\\frac{a}{b}\r\n$$\r\n';
+  const loaded = loadMarkdown(source);
+  assert.equal(loaded.doc.firstChild.child(1).type.name, 'math_inline');
+  assert.equal(loaded.doc.firstChild.child(1).textContent, 'x_1 + \\alpha');
+  assert.equal(loaded.doc.child(1).type.name, 'math_block');
+  assert.equal(saveMarkdown(loaded.doc, loaded), source);
+  const normalized = serializer.serialize(loaded.doc);
+  assert.equal(loadMarkdown(normalized).doc.child(1).textContent, '\\frac{a}{b}');
+});
+test('escaped dollars, currency, code and incomplete formulas stay literal', () => {
+  for (const source of ['\\$x$', '$20 and $30', '`$x$`', '```tex\n$x$\n```', '$$\nnot closed', '$ x $']) {
+    const loaded = loadMarkdown(source); let math = false;
+    loaded.doc.descendants(node => { if (node.type.name.startsWith('math_')) math = true; });
+    assert.equal(math, false, source); assert.equal(saveMarkdown(loaded.doc, loaded), source);
+  }
+});
+test('nested and folded callouts preserve markers after body edits', () => {
+  const source = '> [!WARNING]- 注意\n> 内容\n>\n> > [!TIP]+\n> > $x^2$\n';
+  const loaded = loadMarkdown(source), quote = loaded.doc.firstChild;
+  assert.deepEqual(quote.attrs.callout, {type: 'warning', fold: '-', title: '注意'});
+  assert.equal(quote.child(1).attrs.callout.type, 'tip');
+  const state = EditorState.create({doc: loaded.doc});
+  const edited = state.apply(state.tr.insertText('修改', 2));
+  const saved = saveMarkdown(edited.doc, loaded), reopened = loadMarkdown(saved);
+  assert.equal(reopened.doc.firstChild.attrs.callout.fold, '-');
+  assert.ok(saved.includes('[!WARNING]- 注意'));
+  assert.ok(saved.includes('[!TIP]+'));
+  assert.equal(saveMarkdown(loaded.doc, loaded), source);
+});
+test('editing a paragraph does not turn escaped dollar text into math', () => {
+  const loaded = loadMarkdown('literal \\$x$ and $y$');
+  const state = EditorState.create({doc: loaded.doc});
+  const saved = saveMarkdown(state.apply(state.tr.insertText('new ', 1)).doc, loaded);
+  const reopened = loadMarkdown(saved);
+  let formulas = [];
+  reopened.doc.descendants(node => { if (node.type.name === 'math_inline') formulas.push(node.textContent); });
+  assert.deepEqual(formulas, ['y']);
+  assert.ok(reopened.doc.textContent.includes('literal $x$'));
+});

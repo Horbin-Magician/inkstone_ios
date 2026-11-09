@@ -1,3 +1,4 @@
+import {extensionNodeViews, extensionDecorations} from './extension-views.js';
 import {obsidianImage} from './model.js';
 import {EditorState, TextSelection} from 'prosemirror-state';
 import {EditorView} from 'prosemirror-view';
@@ -192,7 +193,7 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
     session = token; lastSource = source; composition = false; imageBookmark = null;
     if (view) view.destroy();
     view = new EditorView(editor, {
-      state: EditorState.create({doc: loaded.doc, plugins: [history(), markdownInputRules(), keymap({
+      state: EditorState.create({doc: loaded.doc, plugins: [history(), extensionDecorations(), markdownInputRules(), keymap({
         Backspace: undoInputRule,
         'Mod-z': undo, 'Mod-y': redo, 'Shift-Mod-z': redo,
         'Mod-b': toggleMark(schema.marks.strong), 'Mod-i': toggleMark(schema.marks.em),
@@ -208,7 +209,7 @@ function initialize(source, token, initialRevision = 0, context = imageContext) 
         })
       }), keymap(baseKeymap), tableEditing()] }),
       attributes: {role: 'textbox', 'aria-label': '富文本正文', 'aria-multiline': 'true', spellcheck: 'true'},
-      nodeViews: {image: imageView, list_item: itemView},
+      nodeViews: {...extensionNodeViews, image: imageView, list_item: itemView},
       dispatchTransaction(tr) {
         if (imageBookmark) imageBookmark = imageBookmark.map(tr.mapping);
         const result = view.state.applyTransaction(tr);

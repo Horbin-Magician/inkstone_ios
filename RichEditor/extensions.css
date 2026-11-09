@@ -1,0 +1,19 @@
+.math-node { position: relative; } .math-inline { display: inline; } .math-block { display: block; overflow-x: auto; padding: 8px 0; }
+.math-source { display: none; white-space: pre-wrap; } .editing-math .math-source { display: inline; border-bottom: 1px solid var(--accent); }
+.editing-math .math-preview { display: none; } .math-preview { cursor: text; } .katex { font-size: 1.08em; } .katex-display { margin: .5em 0; }
+.render-error { color: #bb4040; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+.diagram-preview { overflow: auto; padding: 10px 0; } .diagram-preview svg { max-width: 100%; height: auto; } .code-node pre { margin-top: 8px; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #a03cb4; } .hljs-string, .hljs-regexp, .hljs-template-tag { color: #287744; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #a35217; } .hljs-title, .hljs-function, .hljs-type, .hljs-built_in { color: #1c68a1; }
+.hljs-comment, .hljs-quote { color: #707974; font-style: italic; } .hljs-attr, .hljs-attribute { color: #936025; }
+.callout { --callout-color: #287ca7; background: color-mix(in srgb, var(--callout-color) 9%, transparent); border-left: 4px solid var(--callout-color); border-radius: 7px; padding: 12px; }
+.callout.amber { --callout-color: #a96b0d; } .callout.red { --callout-color: #bd4040; } .callout.green { --callout-color: #27835b; } .callout.gray { --callout-color: #778080; }
+.callout-title { display: block; font-weight: 600; color: var(--callout-color); background: none; padding: 0; margin: 0 0 6px; text-align: left; }
+button.callout-title::before { content: '▸ '; } button.callout-title[aria-expanded=true]::before { content: '▾ '; }
+[hidden] { display: none !important; }
+@media (prefers-color-scheme: dark) {
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #d998e6; } .hljs-string, .hljs-regexp { color: #98cf9b; }
+.hljs-number, .hljs-symbol { color: #e7ad7b; } .hljs-title, .hljs-function, .hljs-type, .hljs-built_in { color: #8dc8f5; }
+.hljs-comment, .hljs-quote { color: #a0aaa4; } .hljs-attr, .hljs-attribute { color: #d7bd85; }
+.callout { --callout-color: #6fbee6; } .callout.amber { --callout-color: #e7b75e; } .callout.red { --callout-color: #ed9494; } .callout.green { --callout-color: #78d2a7; }
+}

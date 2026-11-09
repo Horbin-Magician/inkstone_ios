@@ -1,6 +1,9 @@
 import Foundation
 
 public enum RichEditorResources {
+    public static var readerURL: URL? {
+        Bundle.module.url(forResource: "reader", withExtension: "html", subdirectory: "RichEditor")
+    }
     public static var pageURL: URL? {
         Bundle.module.url(forResource: "editor", withExtension: "html", subdirectory: "RichEditor")
     }
