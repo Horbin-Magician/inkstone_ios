@@ -11,6 +11,23 @@ public struct SyncReport: Sendable {
 private struct PendingSync: Codable {
     let before: [String: String]
     let target: SyncManifest
+    // Optional fields preserve compatibility with journals from earlier releases.
+    var plan: SyncPathPlan?
+    var removalsComplete: Bool?
+    var published: Bool?
+    var previousRemote: SyncManifest?
+}
+
+private struct SyncPathPlan: Codable {
+    let removals: [String]
+    let installs: [String]
+    init(before: [String: String], target: [String: String]) {
+        removals = before.keys.filter { before[$0] != target[$0] }.sorted {
+            let a = $0.split(separator: "/").count, b = $1.split(separator: "/").count
+            return a == b ? $0 < $1 : a > b
+        }
+        installs = target.keys.filter { before[$0] != target[$0] }.sorted()
+    }
 }
 extension Vault {
     private nonisolated static func bytes(_ url: URL) throws -> Data {
@@ -108,11 +125,27 @@ extension Vault {
         // partially applied downloads as local deletions. Concurrent local edits are retained.
         if fm.fileExists(atPath: pending.path) {
             report.changed = true
-            let transaction = try JSONDecoder().decode(PendingSync.self, from: Data(contentsOf: pending))
+            var transaction = try JSONDecoder().decode(PendingSync.self, from: Data(contentsOf: pending))
             try transaction.target.validate()
-            try apply(transaction, objects: objects, state: state, report: &report)
-            try JSONEncoder().encode(transaction.target).write(to: baseline, options: .atomic)
-            try fm.removeItem(at: pending)
+            try SyncManifest(files: transaction.before).validate()
+            if transaction.published == false {
+                let (observed, _) = try await remote.manifest()
+                try observed.validate()
+                if observed == transaction.target {
+                    transaction.published = true
+                    try JSONEncoder().encode(transaction).write(to: pending, options: .atomic)
+                } else if observed == transaction.previousRemote {
+                    // Publication did not take effect; local files have not been touched.
+                    try fm.removeItem(at: pending)
+                } else {
+                    throw SyncFailure("上次同步的发布结果无法确认，已保留恢复记录并停止本地提交。")
+                }
+            }
+            if fm.fileExists(atPath: pending.path) {
+                try apply(transaction, objects: objects, state: state, report: &report)
+                try JSONEncoder().encode(transaction.target).write(to: baseline, options: .atomic)
+                try fm.removeItem(at: pending)
+            }
         }
         let hasBaseline = fm.fileExists(atPath: baseline.path)
         let base = hasBaseline ? try SyncManifest.decode(Data(contentsOf: baseline)) : SyncManifest()
@@ -142,6 +175,8 @@ extension Vault {
             return finish(report)
         }
         report.changed = true
+        let pathPlan = SyncPathPlan(before: local, target: target.files)
+        try preflight(pathPlan)
         let uploads = Set(target.files.values).subtracting(remoteManifest.files.values)
         let installs = Set(target.files.compactMap { path, hash in local[path] == hash ? nil : hash })
         let needed = uploads.union(installs)
@@ -195,10 +230,16 @@ extension Vault {
         } : nil) == local else { throw VaultError.conflict }
         mark("revalidateLocal")
         try Task.checkCancellation()
+        // Persist the complete plan before publication, including an uncertain-response
+        // state. No local mutation is allowed until publication is confirmed.
+        var transaction = PendingSync(before: local, target: target,
+            plan: pathPlan,
+            removalsComplete: false, published: false, previousRemote: remoteManifest)
+        try JSONEncoder().encode(transaction).write(to: pending, options: .atomic)
         try await remote.publish(target, revision: revision)
         mark("publish")
         // No cancellation from confirmed publication through local commit.
-        let transaction = PendingSync(before: local, target: target)
+        transaction.published = true
         try JSONEncoder().encode(transaction).write(to: pending, options: .atomic)
         try apply(transaction, objects: objects, state: state, report: &report)
         try JSONEncoder().encode(target).write(to: baseline, options: .atomic)
@@ -219,39 +260,116 @@ extension Vault {
             }
         }
     }
-    private func apply(_ transaction: PendingSync, objects: URL, state: URL, report: inout SyncReport) throws {
-        let target = transaction.target.files
-        for path in Set(transaction.before.keys).union(target.keys).sorted() where transaction.before[path] != target[path] {
-            let file = try fileURL(path)
-            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try coordinated(file, writing: true) { file in
-                let old = fm.fileExists(atPath: file.path) ? try Self.bytes(file) : nil
-                let current = old.map(digest)
-                if current == target[path] { return }
-                // A file edited since scanning (or since a crash) is preserved and becomes
-                // a local change against the newly committed baseline on the next sync.
-                guard current == transaction.before[path] else {
-                    report.conflicts.append(path)
-                    return
+    private func preflight(_ plan: SyncPathPlan) throws {
+        let removable = Set(plan.removals.map { $0.lowercased() })
+        for path in plan.installs {
+            let parts = path.split(separator: "/")
+            for count in 1...parts.count {
+                let prefix = parts.prefix(count).joined(separator: "/")
+                let file = try fileURL(prefix)
+                guard fm.fileExists(atPath: file.path) else { break }
+                let values = try file.resourceValues(forKeys: [.isDirectoryKey])
+                if values.isDirectory != true {
+                    guard removable.contains(prefix.lowercased()) else { throw VaultError.conflict }
+                    break // planned removal makes the remaining suffix available
                 }
-                if let old {
+                if count == parts.count {
+                    // A directory becoming a file must contain only planned removals.
+                    // Include hidden entries, which ordinary library scans skip.
+                    var scanError: Error?
+                    guard let walker = fm.enumerator(at: file, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], errorHandler: { _, error in
+                        scanError = error; return false
+                    }) else { throw CocoaError(.fileReadUnknown) }
+                    for case let child as URL in walker {
+                        let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                        guard values.isSymbolicLink != true else { throw VaultError.invalidPath }
+                        if values.isDirectory == true { continue }
+                        let relative = prefix + "/" + child.pathComponents.suffix(walker.level).joined(separator: "/")
+                        guard removable.contains(relative.lowercased()) else { throw VaultError.conflict }
+                    }
+                    if let scanError { throw scanError }
+                }
+            }
+        }
+    }
+    private func apply(_ transaction: PendingSync, objects: URL, state: URL, report: inout SyncReport) throws {
+        var transaction = transaction
+        let target = transaction.target.files
+        let plan = SyncPathPlan(before: transaction.before, target: target)
+        // Never trust path lists supplied by a damaged journal.
+        if let saved = transaction.plan {
+            guard saved.removals == plan.removals, saved.installs == plan.installs else {
+                throw SyncFailure("同步恢复计划损坏。")
+            }
+        }
+        // Validate every staged install before the first destructive operation.
+        for path in plan.installs {
+            let hash = target[path]!
+            guard try digest(Self.bytes(objects.appendingPathComponent(hash))) == hash else {
+                throw SyncFailure("暂存文件校验失败，已保留同步恢复记录。")
+            }
+        }
+        if transaction.removalsComplete != true {
+            for path in plan.removals {
+                let file = try fileURL(path)
+                try coordinated(file, writing: true) { file in
+                    guard fm.fileExists(atPath: file.path) else { return }
+                    let old = try Self.bytes(file)
+                    let current = digest(old)
+                    // Legacy journals may already have installed this target.
+                    if current == target[path] { return }
+                    guard current == transaction.before[path] else {
+                        report.conflicts.append(path)
+                        return
+                    }
                     let backup = state.appendingPathComponent("backups/" + UUID().uuidString)
                     try fm.createDirectory(at: backup, withIntermediateDirectories: true)
                     try old.write(to: backup.appendingPathComponent("content"), options: .atomic)
                     try Data(path.utf8).write(to: backup.appendingPathComponent("path.txt"), options: .atomic)
                     if path.lowercased().hasSuffix(".md"), let text = String(data: old, encoding: .utf8) {
-                        let record = RecoveryRecord(path: path, text: text, kind: "同步前版本")
-                        try self.record(record)
+                        try self.record(RecoveryRecord(path: path, text: text, kind: "同步前版本"))
+                    }
+                    try fm.removeItem(at: file)
+                    if target[path] == nil { report.deleted += 1 }
+                }
+                // Only remove empty parents of removed files. Never recursively delete
+                // folders: hidden files and concurrent external edits must survive.
+                var parent = file.deletingLastPathComponent()
+                while parent.path != root.path {
+                    let checked = try fileURL(String(parent.path.dropFirst(root.path.count + 1)))
+                    if !fm.fileExists(atPath: checked.path) { parent.deleteLastPathComponent(); continue }
+                    guard try fm.contentsOfDirectory(atPath: checked.path).isEmpty else { break }
+                    try coordinated(checked, writing: true) { folder in
+                        guard try fm.contentsOfDirectory(atPath: folder.path).isEmpty else { throw VaultError.conflict }
+                        try fm.removeItem(at: folder)
+                    }
+                    parent.deleteLastPathComponent()
+                }
+            }
+            // This durable barrier prevents a retry from deleting a new file through
+            // its old case-insensitive alias after any installs have completed.
+            transaction.plan = plan
+            transaction.removalsComplete = true
+            try JSONEncoder().encode(transaction).write(to: state.appendingPathComponent("pending.json"), options: .atomic)
+        }
+        for path in plan.installs {
+            let file = try fileURL(path)
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try coordinated(file, writing: true) { file in
+                if fm.fileExists(atPath: file.path) {
+                    let values = try file.resourceValues(forKeys: [.isDirectoryKey])
+                    if values.isDirectory == true {
+                        guard try fm.contentsOfDirectory(atPath: file.path).isEmpty else { throw VaultError.conflict }
+                        try fm.removeItem(at: file)
+                    } else {
+                        if try digest(Self.bytes(file)) != target[path] { report.conflicts.append(path) }
+                        return // retain external edits and already installed content
                     }
                 }
-                if let hash = target[path] {
-                    let data = try Self.bytes(objects.appendingPathComponent(hash))
-                    guard digest(data) == hash else { throw SyncFailure("暂存文件校验失败，已保留同步恢复记录。") }
-                    try data.write(to: file, options: .atomic)
-                } else if old != nil {
-                    try fm.removeItem(at: file)
-                    report.deleted += 1
-                }
+                let hash = target[path]!
+                let data = try Self.bytes(objects.appendingPathComponent(hash))
+                guard digest(data) == hash else { throw SyncFailure("暂存文件校验失败。") }
+                try data.write(to: file, options: .atomic)
             }
         }
     }

@@ -19,6 +19,8 @@ actor MemoryRemote: SyncRemote {
         if delayTransfers { try await Task.sleep(for: .milliseconds(20)) }
     }
     var rejectPublish = false
+    var losePublishResponse = false
+    func loseNextPublishResponse() { losePublishResponse = true }
     var corrupt = false
     var paused = false
     var reachedPause = false
@@ -54,6 +56,7 @@ actor MemoryRemote: SyncRemote {
     func publish(_ manifest: SyncManifest, revision: String?) throws {
         guard !rejectPublish, revision == self.revision.map(String.init) else { throw SyncFailure("stale") }
         value = manifest; self.revision = (self.revision ?? 0) + 1
+        if losePublishResponse { losePublishResponse = false; throw SyncFailure("response lost") }
     }
     func set(_ files: [String: Data], version: Int = 1, generation: UInt64? = nil) {
         value = SyncManifest(version: version, files: files.mapValues(digest), generation: generation)
