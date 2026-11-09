@@ -11,6 +11,14 @@ private actor TransferMeter {
     func finished(_ size: Int) { bytes -= size; tasks -= 1; completed += 1 }
 }
 struct SyncTransferTests {
+    @Test func fileSizeRefreshesAfterRewritingTheSameURL() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data(repeating: 1, count: 10).write(to: file)
+        #expect(try SyncFile.size(file) == 10)
+        try Data(repeating: 2, count: 100).write(to: file)
+        #expect(try SyncFile.size(file) == 100)
+    }
     @Test func byteBudgetLimitsMixedTransfersIndependentlyOfTaskCount() async throws {
         let meter = TransferMeter()
         let items = [7, 6, 2, 1, 4, 8, 2].enumerated().map { SyncTransfer(hash: String($0.offset), bytes: $0.element) }

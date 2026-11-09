@@ -28,7 +28,10 @@ struct SyncTransfer: Sendable {
 
 enum SyncFile {
     static func size(_ url: URL) throws -> Int {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        // URL resource values can survive external rewrites of the same path.
+        var fresh = url
+        fresh.removeAllCachedResourceValues()
+        let values = try fresh.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else { throw VaultError.invalidPath }
         let count = values.fileSize ?? 0
         guard count <= SyncTransfer.fileLimit else { throw SyncFailure("单个同步文件超过 128 MiB。") }
