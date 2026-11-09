@@ -75,7 +75,7 @@ objects[target]['buildPhases'].append(embed)
 project = obj('project', 'PBXProject', attributes={'BuildIndependentTargetsInParallel':'YES', 'LastUpgradeCheck':'1600'}, buildConfigurationList=configs('project', {'CLANG_ENABLE_MODULES':'YES'}), compatibilityVersion='Xcode 14.0', developmentRegion='zh-Hans', hasScannedForEncodings=0, knownRegions=['zh-Hans','en','Base'], mainGroup=main, packageReferences=[package], productRefGroup=products, projectDirPath='', projectRoot='', targets=[target, shareTarget])
 
 def render(value, depth=0):
-    if isinstance(value, dict): return '{\n' + ''.join('\t'*(depth+1)+json.dumps(k)+' = '+render(v,depth+1)+';\n' for k,v in value.items()) + '\t'*depth+'}'
+    if isinstance(value, dict): return '{\n' + ''.join('\t'*(depth+1)+json.dumps(k)+' = '+render(v,depth+1)+';\n' for k,v in sorted(value.items())) + '\t'*depth+'}'
     if isinstance(value, list): return '(' + ', '.join(render(v,depth) for v in value) + ')'
     if isinstance(value, int): return str(value)
     return json.dumps(value, ensure_ascii=False)

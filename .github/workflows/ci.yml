@@ -5,11 +5,29 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: RichEditor/package-lock.json
+      - name: Install rich editor dependencies
+        run: npm ci --prefix RichEditor
+      - name: Rich editor model tests
+        run: npm test --prefix RichEditor
+      - name: Verify bundled rich editor matches source
+        run: |
+          npm run build --prefix RichEditor
+          git diff --exit-code -- Sources/InkstoneCore/Resources/RichEditor
+      - name: Rich editor WebKit tests
+        working-directory: RichEditor
+        run: |
+          npx playwright install --with-deps webkit
+          npm run test:browser
       - name: Core tests and shared SwiftUI compile
         run: swift test
       - name: Validate project generation
         run: |
-          python3 scripts/generate_project.py
+          python3 scripts/check_project_generation.py
           git diff --exit-code -- Inkstone.xcodeproj
       - name: Build iOS simulator application
         run: xcodebuild -project Inkstone.xcodeproj -scheme Inkstone -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
