@@ -145,3 +145,53 @@ test('nested reference definitions survive editing and reopening', async ({page}
   await page.evaluate(source => inkstone.load(source, 'reopened'), saved);
   await expect(page.locator('.ProseMirror a')).toHaveAttribute('href', 'https://example.com');
 });
+
+test('input notifications contain versions and flush returns the latest full snapshot', async ({page}) => {
+  await load(page, 'initial\n');
+  await page.evaluate(() => {
+    window.changes = [];
+    window.webkit = {messageHandlers: {richEditor: {postMessage: message => changes.push(message)}}};
+    inkstone.select(1); inkstone.focus(true);
+  });
+  await page.keyboard.insertText('中文');
+  await expect.poll(() => page.evaluate(() => changes.filter(m => m.type === 'change').length)).toBeGreaterThan(0);
+  const result = await page.evaluate(() => ({messages: changes.filter(m => m.type === 'change'), snapshot: inkstone.flush()}));
+  expect(result.messages.every(m => !('text' in m) && Number.isInteger(m.revision))).toBe(true);
+  expect(result.snapshot.text).toBe('中文initial\n');
+  expect(result.snapshot.revision).toBeGreaterThanOrEqual(result.messages.at(-1).revision);
+});
+
+test('a remounted editor continues native revision numbering', async ({page}) => {
+  await load(page, 'first');
+  await page.evaluate(() => { inkstone.load('latest snapshot', 'remounted', 7); inkstone.select(1); inkstone.focus(true); });
+  expect(await page.evaluate(() => inkstone.flush().revision)).toBe(7);
+  await page.keyboard.insertText('新');
+  const snapshot = await page.evaluate(() => inkstone.flush());
+  expect(snapshot.revision).toBe(8);
+  expect(snapshot.text).toBe('新latest snapshot');
+});
+
+test('navigation snapshot freezes later input until explicit resume or next load', async ({page}) => {
+  await load(page, 'safe');
+  await page.evaluate(() => { inkstone.select(1); inkstone.focus(true); });
+  await page.keyboard.insertText('新');
+  const snapshot = await page.evaluate(() => inkstone.flush(true));
+  expect(snapshot.text).toBe('新safe');
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+  await page.evaluate(() => inkstone.setEnabled(true));
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'false');
+  await page.evaluate(() => inkstone.releaseSnapshot());
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+  await page.keyboard.insertText('增');
+  expect(await markdown(page)).toBe('新增safe');
+  await page.evaluate(() => { inkstone.flush(true); inkstone.load('next', 'next-document'); });
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+});
+
+test('navigation snapshot does not interrupt marked composition', async ({page}) => {
+  await load(page, '中文');
+  await page.locator('.ProseMirror').dispatchEvent('compositionstart');
+  expect(await page.evaluate(() => inkstone.flush(true).composing)).toBe(true);
+  await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
+  await page.locator('.ProseMirror').dispatchEvent('compositionend');
+});

@@ -16,7 +16,7 @@ struct EditorView: View {
     @State private var reading = true
     @AppStorage("markdownSourceEditing") private var sourceEditing = false
     @StateObject private var richEditor = RichEditorBridge()
-    @State private var richDocumentID = UUID()
+    private var richDocumentID: UUID { richEditor.session.documentID }
     @State private var syncDetails = false
     @State private var isNew = false
     @State private var filename = ""
@@ -24,14 +24,20 @@ struct EditorView: View {
     @State private var chooseFolder = false
     @State private var scrollLine: Int?
     @State private var searchQuery = ""
-    @State private var composing = false
+    private var composing: Bool {
+        get { richEditor.session.composing }
+        nonmutating set { richEditor.session.composing = newValue }
+    }
     @State private var attachmentPicker = false
     @State private var attachmentWorking = false
     @State private var previewURL: URL?
     #if os(iOS)
     @State private var photo: PhotosPickerItem?
     #endif
-    @State private var autoSaveBlocked = false
+    private var autoSaveBlocked: Bool {
+        get { richEditor.session.saveBlocked }
+        nonmutating set { richEditor.session.savePhase = newValue ? .failed(issue ?? "保存失败") : .idle }
+    }
     @ScaledMetric(relativeTo: .body) private var readingScale = 1.0
     @AppStorage("readingSize") private var readingSize = 17.0
     @AppStorage("readingSpacing") private var readingSpacing = 5.0
@@ -40,8 +46,17 @@ struct EditorView: View {
     @State private var switcher = false
     @State private var switchQuery = ""
     @State private var switchSelection: Note?
-    @State private var saving = false
-    @State private var historySession = UUID()
+    private var saving: Bool {
+        get { richEditor.session.isSaving }
+        nonmutating set {
+            if newValue { richEditor.session.savePhase = .saving }
+            else if richEditor.session.isSaving { richEditor.session.savePhase = .idle }
+        }
+    }
+    private var historySession: UUID {
+        get { richEditor.session.historyID }
+        nonmutating set { richEditor.session.historyID = newValue }
+    }
     @State private var saveTask: Task<Void, Never>?
     @State private var status = "已保存到文件"
     @State private var issue: String?
@@ -58,7 +73,7 @@ struct EditorView: View {
         let needed: Bool
     }
     private var parsedDocument: MarkdownDocument? { parsedSource == text ? document : nil }
-    private var dirty: Bool { text != current.text }
+    private var dirty: Bool { text != current.text || richEditor.session.hasPendingSnapshot }
     init(note: Note, onClose: (() -> Void)? = nil) {
         self.onClose = onClose
         _current = State(initialValue: note); _text = State(initialValue: note.text)
@@ -114,7 +129,7 @@ struct EditorView: View {
                     }
                 } else {
                     if !sourceEditing {
-                        RichMarkdownEditor(text: $text, focused: $editorFocused, composing: $composing,
+                        RichMarkdownEditor(text: $text, focused: $editorFocused, composing: Binding(get: { composing }, set: { composing = $0 }),
                             documentID: richDocumentID, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
                             titles: store.linkTitles, bridge: richEditor,
                             loadAttachment: { [vault = store.vault, path = current.path] source in
@@ -126,7 +141,7 @@ struct EditorView: View {
                             }, onError: { issue = $0 })
                     } else {
                     #if os(iOS)
-                    MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: $composing, titles: store.linkTitles, pasteImage: { data in
+                    MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: Binding(get: { composing }, set: { composing = $0 }), titles: store.linkTitles, pasteImage: { data in
                         attachmentWorking = true; defer { attachmentWorking = false }
                         return await insertImage(data, extension: "png")
                     })
@@ -143,7 +158,7 @@ struct EditorView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { Task { if await saveIfNeeded() { closeEditor() } } } label: {
+                    Button { Task { await transition { guard await saveIfNeeded() else { return false }; closeEditor(); return true } } } label: {
                         Image(systemName: "chevron.left")
                     }.accessibilityLabel("返回笔记列表").disabled(saving)
                 }
@@ -159,20 +174,20 @@ struct EditorView: View {
                     }.buttonStyle(.plain).accessibilityLabel(current.title + "，" + status + "，切换笔记")
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
-                    Button { Task { await richEditor.flush(); guard !composing else { return }; reading.toggle(); editorFocused = !reading } } label: {
+                    Button { Task { await transition { guard await refreshRichSnapshot(), !composing else { return false }; reading.toggle(); editorFocused = !reading; return true } } } label: {
                         Image(systemName: reading ? "pencil" : "book")
                     }.accessibilityLabel(reading ? "编辑笔记" : "阅读笔记").disabled(composing)
                     Group {
                         Button { Task { _ = await save() } } label: { Image(systemName: "checkmark") }
-                            .disabled(saving || composing || (!dirty && !isNew)).accessibilityLabel("保存笔记").keyboardShortcut("s")
+                            .disabled(saving || composing || (!dirty && !isNew && (reading || sourceEditing))).accessibilityLabel("保存笔记").keyboardShortcut("s")
                     }
                     Menu {
                         Button {
-                            Task {
-                                await richEditor.flush()
-                                guard !composing else { return }
+                            Task { await transition {
+                                guard await refreshRichSnapshot(), !composing else { return false }
                                 sourceEditing.toggle(); reading = false; editorFocused = true
-                            }
+                                return true
+                            } }
                         } label: { Label(sourceEditing ? "切换到富文本编辑" : "切换到 Markdown 源码", systemImage: sourceEditing ? "textformat" : "chevron.left.forwardslash.chevron.right") }
                             .disabled(composing)
                         Divider()
@@ -181,9 +196,9 @@ struct EditorView: View {
                         #endif
                         Button { attachmentPicker = true } label: { Label("附件追加到末尾", systemImage: "paperclip") }
                         Button { store.toggleFavorite(current.path) } label: { Label(store.favorites.contains(current.path) ? "移除书签" : "书签", systemImage: "bookmark") }
-                        Button { info = true } label: { Label("大纲与链接", systemImage: "list.bullet.indent") }
+                        Button { Task { if await refreshRichSnapshot() { info = true } } } label: { Label("大纲与链接", systemImage: "list.bullet.indent") }
                         Button { history = true } label: { Label("历史版本", systemImage: "clock.arrow.circlepath") }
-                        Button { exporting = true } label: { Label("导出 Markdown", systemImage: "square.and.arrow.up") }
+                        Button { Task { if await refreshRichSnapshot() { exporting = true } } } label: { Label("导出 Markdown", systemImage: "square.and.arrow.up") }
                         Button { Task { await saveCopy() } } label: { Label("另存副本", systemImage: "doc.on.doc") }
                         Divider()
                         Button(role: .destructive) { deletePrompt = true } label: { Label("删除笔记", systemImage: "trash") }.disabled(dirty || isNew)
@@ -191,7 +206,7 @@ struct EditorView: View {
                 }
             }
             .disabled(attachmentWorking)
-            .interactiveDismissDisabled(needsSave || saving || attachmentWorking)
+            .interactiveDismissDisabled(needsSave || saving || attachmentWorking || (!reading && !sourceEditing))
             .task(id: current.path) {
                 isNew = !store.notes.contains { $0.path == current.path }
                 filename = isNew ? "" : current.title
@@ -207,6 +222,7 @@ struct EditorView: View {
                 if let note { store.requestedNote = nil; navigate(to: note) }
             }
             .onChange(of: text) { _, _ in scheduleSave() }
+            .onChange(of: richEditor.session.editingVersion) { _, _ in scheduleSave() }
             .onChange(of: filename) { _, _ in if isNew { scheduleSave() } }
             .onChange(of: targetFolder) { _, _ in if isNew { scheduleSave() } }
             .onChange(of: reading) { _, value in if value { flushSave() } }
@@ -237,19 +253,27 @@ struct EditorView: View {
                 Button("创建并编辑") {
                     guard let target = missingLink else { return }
                     missingLink = nil
-                    Task {
-                        guard await saveIfNeeded(), let vault = store.vault else { return }
+                    Task { await transition {
+                        guard await saveIfNeeded(), let vault = store.vault else { return false }
                         do {
                             let path = try NoteIndex.creationPath(target, from: current.path)
                             let note = try await vault.create(path: path, text: "")
                             await store.refresh(); switchNote(note); reading = false; editorFocused = true
-                        } catch { issue = error.localizedDescription }
-                    }
+                            return true
+                        } catch { issue = error.localizedDescription; return false }
+                    } }
                 }
                 Button("取消", role: .cancel) { missingLink = nil }
             } message: { Text((missingLink ?? "") + "\n当前修改会先保存到文件。") }
             .alert("提示", isPresented: Binding(get: { issue != nil }, set: { if !$0 { issue = nil } })) {
                 Button("好") { issue = nil }
+                if richEditor.session.snapshotFailure != nil {
+                    Button("使用最近快照转到源码") {
+                        richEditor.session.useLastSnapshot()
+                        sourceEditing = true; reading = false; editorFocused = true
+                        issue = nil; status = "已使用最近取得的快照，请核对正文"
+                    }
+                }
             } message: { Text(issue ?? "") }
             .quickLookPreview($previewURL)
             .onChange(of: previewURL) { old, new in
@@ -364,8 +388,8 @@ struct EditorView: View {
     /// Inserting the first attachment commits the selected draft location. Later
     /// attachments and all readers use this persisted path, even before autosave.
     private func attachmentNotePath() async throws -> String {
-        guard !saving, !composing else { throw VaultError.busy }
-        if isNew, !(await save()) { throw VaultError.conflict }
+        guard await refreshRichSnapshot(), !saving, !composing else { throw VaultError.busy }
+        if isNew, !(await save(snapshotReady: true)) { throw VaultError.conflict }
         guard !isNew else { throw VaultError.conflict }
         return current.path
     }
@@ -396,8 +420,8 @@ struct EditorView: View {
         scrollLine = nil
         Task { await Task.yield(); scrollLine = target }
     }
-    private func switchNote(_ note: Note) { historySession = UUID(); saveTask?.cancel(); richDocumentID = UUID(); autoSaveBlocked = false; isNew = !store.notes.contains { $0.path == note.path }; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件" }
-    private func navigate(to note: Note) { Task { if await saveIfNeeded() { switchNote(note) } } }
+    private func switchNote(_ note: Note) { richEditor.session = EditorSession(); saveTask?.cancel(); isNew = !store.notes.contains { $0.path == note.path }; current = note; text = note.text; reading = !note.text.isEmpty; editorFocused = !reading; status = "已保存到文件" }
+    private func navigate(to note: Note) { Task { await transition { guard await saveIfNeeded() else { return false }; switchNote(note); return true } } }
     private func openLink(_ target: String) {
         switch store.noteIndex.resolve(target, from: current.path) {
         case .found(let path): if let note = store.notes.first(where: { $0.path == path }) { navigate(to: note) }
@@ -427,20 +451,41 @@ struct EditorView: View {
             } catch is CancellationError {} catch { issue = error.localizedDescription }
         }
     }
+    private func transition(_ operation: () async -> Bool) async {
+        guard richEditor.beginTransition() else { return }
+        let completed = await operation()
+        // Successful navigation/mode changes leave the old document frozen until
+        // dismantle or the next load. Failed saves resume the same live document.
+        richEditor.endTransition(resume: !completed)
+    }
+    private func refreshRichSnapshot() async -> Bool {
+        if let failure = richEditor.session.snapshotFailure { issue = failure; return false }
+        guard !reading && !sourceEditing else { return true }
+        guard await richEditor.flush(freeze: richEditor.session.transitioning) else {
+            status = "保存失败 · 尚未取得最新内容"
+            issue = richEditor.session.snapshotFailure
+            return false
+        }
+        guard !richEditor.session.snapshotComposing, !richEditor.session.hasPendingSnapshot else {
+            if !composing { scheduleSave() }
+            return false
+        }
+        return true
+    }
     private func saveIfNeeded() async -> Bool {
-        await richEditor.flush()
+        guard await refreshRichSnapshot() else { return false }
         guard !saving, !composing else { return false }
-        guard needsSave else { return true }
-        guard await save() else { return false }
-        return !needsSave
+        guard needsSave else { return richEditor.session.canNavigate(textIsDirty: false) }
+        guard await save(snapshotReady: true) else { return false }
+        return richEditor.session.canNavigate(textIsDirty: needsSave)
     }
     private func flushSave() {
         saveTask?.cancel()
         guard !autoSaveBlocked else { return }
-        Task { await richEditor.flush(); guard needsSave, !composing else { return }; _ = await saveIfNeeded() }
+        Task { _ = await saveIfNeeded() }
     }
-    private func save() async -> Bool {
-        await richEditor.flush()
+    private func save(snapshotReady: Bool = false) async -> Bool {
+        if !snapshotReady, !(await refreshRichSnapshot()) { return false }
         guard !saving, !composing, let vault = store.vault else { return false }
         saving = true; saveTask?.cancel(); defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
         do {
@@ -453,10 +498,10 @@ struct EditorView: View {
                 saved = try await vault.save(path: current.path, text: text, expected: current.text, historySession: historySession)
             }
             await store.acceptSaved(saved); current = saved; autoSaveBlocked = false; status = "已保存到文件"; return true
-        } catch { autoSaveBlocked = true; status = "保存失败 · 修改尚未写入文件"; issue = error.localizedDescription; return false }
+        } catch { issue = error.localizedDescription; autoSaveBlocked = true; status = "保存失败 · 修改尚未写入文件"; return false }
     }
     private func saveCopy() async {
-        await richEditor.flush()
+        guard await refreshRichSnapshot() else { return }
         guard !saving, !composing, let vault = store.vault else { return }
         saving = true; saveTask?.cancel(); defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
         do {
@@ -466,6 +511,8 @@ struct EditorView: View {
         } catch { issue = error.localizedDescription }
     }
     private func delete() async {
+        guard await refreshRichSnapshot() else { return }
+        guard !dirty else { issue = "请先保存最新修改再删除笔记。"; return }
         saving = true; defer { saving = false }
         do { try await store.deleteNote(current); closeEditor() }
         catch { issue = error.localizedDescription }

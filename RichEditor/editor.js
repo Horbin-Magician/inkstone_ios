@@ -8,6 +8,7 @@ import {tableEditing, goToNextCell, addRowAfter, deleteRow, addColumnAfter, dele
 import {schema, loadMarkdown, saveMarkdown} from './model.js';
 
 let loaded, view, session, revision = 0, lastSource, imageBookmark, composition = false;
+let frozen = false, editorEnabled = true;
 let publishTimer, serializedRevision = -1, serializedText;
 const post = value => window.webkit?.messageHandlers.richEditor.postMessage({...value, session});
 const editor = document.querySelector('#editor');
@@ -20,6 +21,7 @@ function snapshot() {
     serializedText = saveMarkdown(view.state.doc, loaded);
     serializedRevision = revision;
   }
+  lastSource = serializedText;
   return {text: serializedText, composing: composition || view.composing, revision, session};
 }
 function schedulePublish() {
@@ -30,9 +32,9 @@ function schedulePublish() {
 function publish() {
   clearTimeout(publishTimer); publishTimer = null;
   if (!view) return;
-  const value = snapshot();
-  lastSource = value.text;
-  post({type: 'change', ...value});
+  // Input notifications carry versions only. Native save/navigation explicitly
+  // requests flush(), which is the sole full-text snapshot boundary.
+  post({type: 'change', revision, composing: composition || view.composing});
   updateToolbar();
 }
 function run(command) {
@@ -183,10 +185,11 @@ function itemView(node, editorView, getPos) {
   return {dom, contentDOM};
 }
 
-function initialize(source, token) {
+function initialize(source, token, initialRevision = 0) {
+  frozen = false;
   clearTimeout(publishTimer); publishTimer = null; serializedRevision = -1;
   try {
-    loaded = loadMarkdown(source); revision = token === session ? revision + 1 : 0;
+    loaded = loadMarkdown(source); revision = token === session ? revision + 1 : initialRevision;
     session = token; lastSource = source; composition = false; imageBookmark = null;
     if (view) view.destroy();
     view = new EditorView(editor, {
@@ -247,7 +250,15 @@ function initialize(source, token) {
 
 window.inkstone = {
   load: initialize,
-  flush: () => { if (!view) return null; publish(); return snapshot(); },
+  flush: (freeze = false) => {
+    if (!view) return null;
+    if (freeze && !composition && !view.composing) {
+      frozen = true;
+      window.inkstone.setEnabled(editorEnabled);
+    }
+    publish(); return snapshot();
+  },
+  releaseSnapshot() { frozen = false; window.inkstone.setEnabled(editorEnabled); },
   setSource(source, token) {
     if (token === session && source === lastSource) return;
     // External appends (photos/attachments) are undoable and keep the selection.
@@ -261,7 +272,7 @@ window.inkstone = {
     } else initialize(source, token);
   },
   focus(focused) { if (view) { if (focused) view.focus(); else view.dom.blur(); } },
-  setEnabled(enabled) { if (view) view.setProps({editable: () => enabled}); toolbar.inert = !enabled; },
+  setEnabled(enabled) { editorEnabled = enabled; if (view) view.setProps({editable: () => enabled && !frozen}); toolbar.inert = !enabled || frozen; },
   setAppearance(size, spacing) { document.documentElement.style.setProperty('--body-size', size + 'px'); document.documentElement.style.setProperty('--line-spacing', spacing + 'px'); },
   setTitles(titles) {
     const datalist = document.querySelector('#note-targets'); datalist.replaceChildren();

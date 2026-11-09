@@ -6,13 +6,51 @@ import InkstoneCore
 /// Flush the WebKit editing transaction before saving or replacing an editor.
 @MainActor final class RichEditorBridge: ObservableObject {
     weak var webView: WKWebView?
-    var receive: (([String: Any]) -> Void)?
+    @Published var session = EditorSession()
+    var receive: (([String: Any]) -> Bool)?
+    private var pendingFlush: (documentID: UUID, token: UUID, frozen: Bool, task: Task<Bool, Never>)?
 
-    func flush() async {
-        guard let webView,
-              let result = try? await webView.evaluateJavaScript("window.inkstone?.flush()"),
-              let snapshot = result as? [String: Any] else { return }
-        receive?(snapshot)
+    func beginTransition() -> Bool {
+        guard !session.transitioning, !session.composing else { return false }
+        session.transitioning = true
+        return true
+    }
+    func endTransition(resume: Bool) {
+        session.transitioning = false
+        if resume { webView?.evaluateJavaScript("window.inkstone?.releaseSnapshot()") }
+    }
+    func flush(freeze: Bool = false) async -> Bool {
+        let documentID = session.documentID
+        if let pendingFlush, pendingFlush.documentID == documentID {
+            if pendingFlush.frozen || !freeze { return await pendingFlush.task.value }
+            _ = await pendingFlush.task.value
+        }
+        let token = UUID()
+        let task = Task { await readSnapshot(documentID: documentID, freeze: freeze) }
+        pendingFlush = (documentID, token, freeze, task)
+        defer { if pendingFlush?.token == token { pendingFlush = nil } }
+        return await task.value
+    }
+    private func readSnapshot(documentID: UUID, freeze: Bool) async -> Bool {
+        guard documentID == session.documentID, session.snapshotFailure == nil else { return false }
+        do {
+            guard let webView else { throw SyncFailureForEditor.missingSnapshot }
+            let result = try await webView.evaluateJavaScript("window.inkstone?.flush(\(freeze ? "true" : "false"))")
+            guard self.webView === webView, documentID == session.documentID,
+                  let snapshot = result as? [String: Any], receive?(snapshot) == true else {
+                throw SyncFailureForEditor.missingSnapshot
+            }
+            return true
+        } catch {
+            if documentID == session.documentID {
+                session.snapshotFailure = "无法取得最新编辑内容，尚未保存：" + error.localizedDescription
+            }
+            return false
+        }
+    }
+    private enum SyncFailureForEditor: LocalizedError {
+        case missingSnapshot
+        var errorDescription: String? { "富文本快照不可用或已过期。" }
     }
 }
 
@@ -60,7 +98,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         #endif
         coordinator.view = view
         bridge.webView = view
-        bridge.receive = { [weak coordinator] in coordinator?.accept($0) }
+        bridge.receive = { [weak coordinator] in coordinator?.accept($0) ?? false }
         if let page = RichEditorResources.pageURL {
             view.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
         } else { DispatchQueue.main.async { onError("富文本编辑资源缺失，请切换到源码编辑。") } }
@@ -101,7 +139,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             guard ready else { return }
             if lastID != parent.documentID {
                 lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil; lastEnabled = nil
-                call("load", [parent.text, parent.documentID.uuidString])
+                call("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion])
             } else if lastSource != parent.text {
                 lastSource = parent.text; lastEnabled = nil
                 call("setSource", [parent.text, parent.documentID.uuidString])
@@ -117,20 +155,25 @@ struct RichMarkdownEditor: RichEditorRepresentable {
                 lastFocus = parent.focused; call("focus", [parent.focused])
             }
         }
-        func accept(_ body: [String: Any]) {
+        @discardableResult func accept(_ body: [String: Any]) -> Bool {
             guard body["session"] as? String == parent.documentID.uuidString,
-                  let text = body["text"] as? String, let version = body["revision"] as? Int, version >= revision else { return }
+                  parent.documentID == parent.bridge.session.documentID,
+                  let text = body["text"] as? String, let version = body["revision"] as? Int,
+                  let composing = body["composing"] as? Bool, version >= revision,
+                  parent.bridge.session.acceptSnapshot(version: version, composing: composing) else { return false }
             revision = version; lastSource = text
-            // Keep the existing save barrier active for marked Chinese/Japanese text.
-            parent.composing = body["composing"] as? Bool ?? false
             if parent.text != text { parent.text = text }
+            return true
         }
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.frameInfo.isMainFrame, let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
             if type == "ready" { ready = true; synchronize(); return }
-            guard body["session"] as? String == parent.documentID.uuidString else { return }
+            guard body["session"] as? String == parent.documentID.uuidString,
+                  parent.documentID == parent.bridge.session.documentID else { return }
             switch type {
-            case "change": accept(body)
+            case "change":
+                guard let version = body["revision"] as? Int, let composing = body["composing"] as? Bool else { return }
+                parent.bridge.session.changed(version: version, composing: composing)
             case "composition": parent.composing = body["composing"] as? Bool ?? false
             case "focus":
                 let focused = body["focused"] as? Bool ?? false
@@ -156,9 +199,11 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             decisionHandler(navigationAction.request.url == RichEditorResources.pageURL ? .allow : .cancel)
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            guard parent.documentID == parent.bridge.session.documentID else { return }
             ready = false; lastID = nil; appearance = []; lastTitles = []
             parent.composing = false
-            parent.onError("富文本编辑进程已重启，正在恢复最近同步的正文。")
+            parent.bridge.session.snapshotFailure = "富文本编辑进程中断，无法确认最新修改。可以保留最近取得的快照并转到源码编辑。"
+            parent.onError(parent.bridge.session.snapshotFailure!)
             if let page = RichEditorResources.pageURL { webView.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent()) }
         }
         func dismantle(_ view: WKWebView) {

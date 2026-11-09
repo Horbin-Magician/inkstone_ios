@@ -158,3 +158,20 @@ python3 scripts/test-webdav-interop.py
 下载约慢 12%，这是保守下载并发预算及额外文件校验的代价；本轮以大幅降低峰值内存为取舍。初版文件接口测到 861,552,640 B 峰值，定位为分块读取的 autorelease 临时对象累积，增加逐块释放后才得到上述结果。没有将首次回退数据丢弃：所有三轮日志分别保留在 `.build/performance/stage3/attachments-before.log`、`attachments-after.log`、`attachments-after-bounded.log`。
 
 这些是组件和本机文件远端结果，不能当作实际网络带宽或 iPhone 内存数据。复现：`INKSTONE_ATTACHMENT_BENCHMARK=1 ... swift test -c release --filter multipleLargeAttachments`。另以实际 Swift／Rust 客户端对可丢弃本地 WebDAV 测试服务验证：笔记、附件、改名、冲突、删除互操作通过；32 MiB 文件上传／下载完整一致，重复上传的 412 条件响应触发既有对象下载校验。运行 `python3 scripts/test-webdav-interop.py`。真实外部 WebDAV 的超时／断网验收仍未完成。
+
+## 第三阶段：富文本版本通知与快照屏障
+
+输入事件只发送 revision／组合输入状态；保存、导航、模式切换和导出显式取得完整快照。多个同时发生的快照请求合并。导航／模式切换的快照在 WebKit 内冻结后续输入，失败则恢复编辑，成功保持冻结直到旧视图拆除或新文档加载，避免快照返回后又输入的字符被切换操作丢弃；冻结不会打断正在进行的组合输入。
+
+为保证这条路径的正确性，提前抽取第四阶段所需的 `EditorSession`：统一编辑与快照版本、组合输入、保存阶段／失败、导航判断和历史会话身份。快照失败明确返回失败；WebKit 进程中断不会把旧正文当成保存成功。用户可以明确选择最近快照转到源码核对，旧 WebKit 消息在更换会话身份后失效。
+
+同机 Playwright WebKit、390×844 视口、相同笔记及 10 次输入（80 ms 间隔）：
+
+| 数据集 | 原输入消息字节 | 新输入消息字节 | 原／新输入到下一帧 p50 | 原／新 p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 约 32 KiB | 325,016 | 761 | 17 / 17 ms | 38 / 40 ms |
+| 接近 8 MiB | 84,061,036 | 781 | 17 / 17 ms | 26 / 33 ms |
+
+本轮证明桥接正文流量消除，未证明输入延迟改善（p95 有波动甚至变慢）；这些是桌面 WebKit 模拟移动视口的测量，不是 iPhone 中文输入法结果。保存时仍有一次完整快照传输。测试确认最终快照包含全部 10 次输入。原始日志 `.build/performance/stage3/bridge-before.log`、`bridge-after.log`；`INKSTONE_BRIDGE_BENCHMARK=1 npm run test:browser --prefix RichEditor -- --workers=1 bridge-benchmark.spec.js` 可复测。
+
+新增验证包括版本通知不带正文、视图重建后的版本连续性、过期快照、保存期间继续输入、组合输入与快照交错、快照失败禁止导航、导航冻结／恢复。WebKit 回归 15 项通过（性能用例默认跳过），Swift 全量 111 项通过；iOS 模拟器 Release 构建通过。真机拼音／手写、即时返回及进程切换仍需设备验收。
