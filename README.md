@@ -151,3 +151,5 @@ Swift Package 还会编译 `InkstonePreview`，用于在 macOS SDK 下检查共�
 2026-10-31：0.1.0（4）已成功上传 App Store Connect，包含书签/文件夹/删除入口调整、低干扰加载提示和前台自动同步。此前两次上传因 TLS 错误失败，重试于北京时间 23:31 收到 Upload succeeded / EXPORT SUCCEEDED 回执，构建进入 Apple 处理阶段。尚未确认 TestFlight 测试组可下载状态。归档、各次上传日志和测试重点保留在 `.build/releases/testflight-0.1.0-4/`。
 
 2026-11-07：0.1.0（5）已完成签名归档并成功上传 App Store Connect；北京时间 13:11 收到 `Upload succeeded` / `EXPORT SUCCEEDED` 回执，构建进入 Apple 处理阶段。本版包含记录流程、草稿续写、图片附件、搜索定位、恢复备份、可选自动保存、批量整理、iPad 分栏和分享扩展。主应用及扩展均验证构建号 5 和 `group.com.inkstone.mobile` 签名权限一致。57 项核心回归通过；尚未确认 TestFlight 测试组可下载状态。源码提交为 `33d3776`；归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-5/`。
+
+2026-11-09：0.1.0（6）已完成签名归档并成功上传 App Store Connect；北京时间 18:15 收到 `Upload succeeded` / `EXPORT SUCCEEDED` 回执，构建进入 Apple 处理阶段。本版包含富文本编辑与自动保存、同步正确性及恢复修复，以及搜索、附件传输、图片缓存和同步调度优化。123 项核心测试、24 项编辑器模型测试和 45 项 WebKit 测试通过（2 项跳过）。尚未确认 TestFlight 测试组可下载状态。基于源码提交 `6b68479`，主应用和扩展构建号统一升至 6；归档、日志和测试重点位于 `.build/releases/testflight-0.1.0-6/`。

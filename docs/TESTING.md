@@ -152,3 +152,12 @@
 - 含 frontmatter、引用定义、HTML、CRLF、嵌套列表、图片及 Wiki 链接的笔记，打开不修改时原文完全一致；修改一个段落后，其他顶层块、属性及定义仍保留。
 - iPhone／iPad 检查横向格式栏、键盘收起、深色模式、大字号、VoiceOver 与宽屏布局；真实大文档（包括接近 8 MB）检查响应和 WebKit 内存表现。
 - 自动检查：`cd RichEditor && npm ci && npm run build && npm test`；安装 WebKit 后运行 `npm run test:browser`；再执行仓库的 `./scripts/check.sh` 和 iOS 模拟器构建。
+
+## 2026-11-09 TestFlight 0.1.0（6）发布
+
+- 基于源码提交 `6b68479`，主应用和分享扩展的构建号统一升至 6，工程生成器同步更新。
+- 123 项 Swift 核心测试、24 项编辑器模型测试、45 项 WebKit 测试通过；2 项浏览器测试跳过。plist/entitlements 检查、编辑器打包资源一致性与工程重复生成稳定性验证通过。
+- iOS Release 签名归档成功；`codesign --verify --deep --strict` 通过；主应用及扩展均验证版本 0.1.0、构建号 6 和 `group.com.inkstone.mobile` 权限。
+- 北京时间 18:15:22 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。
+- App Store Connect 网页当前未登录，尚未确认 Apple 处理完成、测试组可下载或外部测试审核状态；未进行 App Store 正式版提审。
+- 归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-6/`。真机中文输入法、文件提供商、分享扩展和真实网络验收仍需执行。
