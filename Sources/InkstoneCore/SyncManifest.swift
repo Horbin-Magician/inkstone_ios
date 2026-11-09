@@ -66,6 +66,37 @@ struct SyncManifest: Codable, Equatable {
             }
         }
     }
+    /// Shared desktop/mobile rule: reserve UTF-8 bytes for the full digest suffix
+    /// and extension, truncate only at Unicode scalar boundaries, then number clashes.
+    static func conflictPath(_ path: String, hash: String, occupied: [[String: String]]) throws -> String {
+        let name = (path as NSString).lastPathComponent
+        let parent = String(path.dropLast(name.count))
+        let ext = (name as NSString).pathExtension
+        let ending = ext.isEmpty ? "" : "." + ext
+        let stem = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+        let componentLimit = min(255, 4096 - parent.utf8.count)
+        for number in 1...100_001 {
+            let suffix = " (云端冲突 \(hash)" + (number == 1 ? "" : " \(number)") + ")"
+            let budget = componentLimit - suffix.utf8.count - ending.utf8.count
+            guard budget >= 0 else { throw SyncFailure("文件扩展名过长，无法安全生成冲突副本。") }
+            var prefix = "", used = 0
+            for scalar in stem.unicodeScalars {
+                let count = scalar.utf8.count
+                if used + count > budget { break }
+                prefix.unicodeScalars.append(scalar); used += count
+            }
+            let candidate = parent + prefix + suffix + ending
+            let folded = candidate.lowercased()
+            let blocked = occupied.contains { files in
+                files.contains { original, value in
+                    let other = original.lowercased()
+                    return (other == folded && (original != candidate || value != hash)) || other.hasPrefix(folded + "/") || folded.hasPrefix(other + "/")
+                }
+            }
+            if !blocked { try validatePath(candidate); return candidate }
+        }
+        throw SyncFailure("无法分配冲突副本名称。")
+    }
     static func merge(base: [String: String], local: [String: String], remote: Self) throws -> (Self, [String]) {
         var result = remote
         result.files = [:]
@@ -80,12 +111,7 @@ struct SyncManifest: Codable, Equatable {
                 conflicts.append(path)
                 chosen = l ?? r
                 if l != nil, let r {
-                    let ext = (path as NSString).pathExtension
-                    let stem = ext.isEmpty ? path : (path as NSString).deletingPathExtension
-                    let copy = stem + " (云端冲突 \(r))" + (ext.isEmpty ? "" : "." + ext)
-                    for files in [base, local, remote.files] {
-                        guard files[copy] == nil || files[copy] == r else { throw SyncFailure("冲突副本名称已被占用。") }
-                    }
+                    let copy = try conflictPath(path, hash: r, occupied: [base, local, remote.files, copies])
                     copies[copy] = r
                 }
             }

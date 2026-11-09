@@ -3,6 +3,10 @@ import Testing
 @testable import InkstoneCore
 
 struct SyncPathTests {
+    private var temporaryRoot: URL {
+        ProcessInfo.processInfo.environment["INKSTONE_SYNC_TEST_ROOT"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory
+    }
     @Test(arguments: [
         ("a.md", "A.md"), ("A.md", "a.md"),
         ("item", "item/note.md"), ("item/note.md", "item"),
@@ -10,7 +14,7 @@ struct SyncPathTests {
     ])
     func remotePathTransition(paths: (String, String)) async throws {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: base) }
         let root = base.appendingPathComponent("vault")
         let recovery = base.appendingPathComponent("recovery")
@@ -38,7 +42,7 @@ extension SyncPathTests {
     @Test(arguments: [false, true])
     func restartAfterRemovalBarrier(partiallyInstalled: Bool) async throws {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: base) }
         let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
         let vault = try Vault(root: root, recovery: recovery)
@@ -69,7 +73,7 @@ extension SyncPathTests {
 
     @Test func corruptStagingDoesNotDeleteAnyOriginalsDuringRecovery() async throws {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let base = temporaryRoot.appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: base) }
         let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
         let vault = try Vault(root: root, recovery: recovery)
@@ -91,7 +95,7 @@ extension SyncPathTests {
 extension SyncPathTests {
     @Test func lostPublishResponseResumesOnRestart() async throws {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let base = temporaryRoot.appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: base) }
         let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
         let vault = try Vault(root: root, recovery: recovery)
@@ -112,7 +116,7 @@ extension SyncPathTests {
 extension SyncPathTests {
     @Test func hiddenFileBlocksDirectoryReplacementBeforePublish() async throws {
         let fm = FileManager.default
-        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let base = temporaryRoot.appendingPathComponent(UUID().uuidString)
         defer { try? fm.removeItem(at: base) }
         let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
         let vault = try Vault(root: root, recovery: recovery)
