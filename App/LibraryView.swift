@@ -195,6 +195,8 @@ struct LibraryView: View {
                         Label("上一级 · " + store.currentFolder, systemImage: "arrow.turn.up.left")
                             .font(.subheadline).lineLimit(1)
                     }.frame(minHeight: 36)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .listRowSeparator(.hidden, edges: .top)
                 }
                 ForEach(childFolders, id: \.self) { folder in
                     Button { store.currentFolder = folder } label: {
@@ -205,6 +207,8 @@ struct LibraryView: View {
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
                         }.frame(minHeight: 36).contentShape(Rectangle())
                     }.buttonStyle(.plain)
+                    .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                    .listRowSeparator(store.currentFolder.isEmpty && folder == childFolders.first ? .hidden : .automatic, edges: .top)
                     .contextMenu { folderActions(folder) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) { folderActions(folder) }
                 }
