@@ -27,3 +27,24 @@ struct SyncConflictNameTests {
         #expect(try SyncManifest.merge(base: base, local: current, remote: server).0 == result)
     }
 }
+
+extension SyncConflictNameTests {
+    @Test func longConflictFilesSurviveRepeatedSyncAndRestart() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let remote = MemoryRemote()
+        let path = String(repeating: "中文😀", count: 25) + ".md"
+        await remote.set([path: Data("old".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        _ = try await vault.save(path: path, text: "local", expected: "old")
+        await remote.set([path: Data("remote".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        let target = await remote.value
+        let reopened = try Vault(root: root, recovery: recovery)
+        _ = try await reopened.synchronize(remote: remote)
+        #expect(Set(try await reopened.scan().notes.map(\.text)) == ["local", "remote"])
+        #expect(await remote.value == target)
+    }
+}

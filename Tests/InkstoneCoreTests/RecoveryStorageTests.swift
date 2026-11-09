@@ -21,7 +21,12 @@ struct RecoveryStorageTests {
         #expect(try Data(contentsOf: root.appendingPathComponent(restored + "/images/a.bin")) == original)
         #expect(try Data(contentsOf: root.appendingPathComponent("images/a.bin")) == edited)
         let state = recovery.appendingPathComponent(".sync/" + digest(Data(remote.identity.utf8)))
+        try fm.createDirectory(at: state.appendingPathComponent("objects"), withIntermediateDirectories: true)
+        try original.write(to: state.appendingPathComponent("objects/" + digest(original)))
         try Data("pending".utf8).write(to: state.appendingPathComponent("pending.json"))
+        let staged = try #require(try await vault.recoveryStorage().first { $0.category == .staging })
+        #expect(staged.protected && staged.bytes == 3)
+        await #expect(throws: VaultError.self) { try await vault.removeRecoveryStorage(staged.id) }
         #expect(try await vault.recoveryStorage().first { $0.id == backup.id }?.protected == true)
         await #expect(throws: VaultError.self) { try await vault.removeRecoveryStorage(backup.id) }
         try fm.removeItem(at: state.appendingPathComponent("pending.json"))

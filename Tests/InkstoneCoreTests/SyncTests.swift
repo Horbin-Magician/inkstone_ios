@@ -3,7 +3,8 @@ import Testing
 @testable import InkstoneCore
 
 actor MemoryRemote: SyncRemote {
-    nonisolated let identity = "test-endpoint\nuser"
+    nonisolated let identity: String
+    init(identity: String = "test-endpoint\nuser") { self.identity = identity }
     var value = SyncManifest()
     var revision: Int? = nil
     var objects: [String: Data] = [:]
@@ -64,6 +65,7 @@ actor MemoryRemote: SyncRemote {
         revision = (revision ?? 0) + 1
     }
     func reject() { rejectPublish = true }
+    func acceptPublishes() { rejectPublish = false }
     func corruptDownloads() { corrupt = true }
     func loseManifest() { revision = nil; value = SyncManifest() }
 }
@@ -151,7 +153,7 @@ final class SyncTests {
         await remote.reject()
         await #expect(throws: SyncFailure.self) { _ = try await self.vault.synchronize(remote: remote) }
         #expect(try await vault.scan().notes.map(\.path) == ["local.md"])
-        let corrupt = MemoryRemote()
+        let corrupt = MemoryRemote(identity: "corrupt-endpoint\nuser")
         await corrupt.set(["bad.md": Data("correct".utf8)])
         await corrupt.corruptDownloads()
         await #expect(throws: SyncFailure.self) { _ = try await self.vault.synchronize(remote: corrupt) }

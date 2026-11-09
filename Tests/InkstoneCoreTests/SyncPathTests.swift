@@ -19,6 +19,9 @@ struct SyncPathTests {
         let root = base.appendingPathComponent("vault")
         let recovery = base.appendingPathComponent("recovery")
         let vault = try Vault(root: root, recovery: recovery)
+        if ProcessInfo.processInfo.environment["INKSTONE_SYNC_TEST_ROOT"] != nil {
+            #expect(try root.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey]).volumeSupportsCaseSensitiveNames == true)
+        }
         let remote = MemoryRemote()
         let data = Data("content".utf8)
         await remote.set([paths.0: data])
@@ -131,5 +134,25 @@ extension SyncPathTests {
         #expect(await remote.revision == revision)
         #expect(try String(contentsOf: hidden, encoding: .utf8) == "external")
         #expect(try String(contentsOf: root.appendingPathComponent("folder/a.md"), encoding: .utf8) == "old")
+    }
+}
+
+extension SyncPathTests {
+    @Test func rejectedPublicationCanRetryWithoutApplyingUnpublishedChanges() async throws {
+        let base = temporaryRoot.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let remote = MemoryRemote()
+        _ = try await vault.create(path: "local.md", text: "local")
+        await remote.set(["remote.md": Data("remote".utf8)])
+        await remote.reject()
+        await #expect(throws: SyncFailure.self) { _ = try await vault.synchronize(remote: remote) }
+        #expect(try await vault.scan().notes.map(\.path) == ["local.md"])
+        await remote.acceptPublishes()
+        let restarted = try Vault(root: root, recovery: recovery)
+        _ = try await restarted.synchronize(remote: remote)
+        #expect(Set(try await restarted.scan().notes.map(\.path)) == ["local.md", "remote.md"])
+        #expect(Set(await remote.value.files.keys) == ["local.md", "remote.md"])
     }
 }
