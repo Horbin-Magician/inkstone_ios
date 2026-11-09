@@ -416,7 +416,7 @@ extension SyncTests {
             try process.run(); process.waitUntilExit()
             #expect(process.terminationStatus == 0)
         }
-        var settings = WebDAVSettings(); settings.url = endpoint; settings.username = "interop"
+        var settings = WebDAVSettings(); settings.allowInsecureHTTP = true; settings.url = endpoint; settings.username = "interop"
         let remote = try WebDAV(settings: settings, password: "test-only")
         try desktopSync()
         _ = try await vault.synchronize(remote: remote)

@@ -3,12 +3,35 @@ import Foundation
 public struct WebDAVSettings: Codable, Equatable, Sendable {
     public var url = ""
     public var username = ""
+    public var allowInsecureHTTP = false
     public init() {}
+    private enum CodingKeys: String, CodingKey { case url, username, allowInsecureHTTP }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        url = try values.decode(String.self, forKey: .url)
+        username = try values.decode(String.self, forKey: .username)
+        allowInsecureHTTP = try values.decodeIfPresent(Bool.self, forKey: .allowInsecureHTTP) ?? false
+    }
     public func endpoint() throws -> URL {
-        guard var parts = URLComponents(string: url.trimmingCharacters(in: .whitespacesAndNewlines)),
+        let endpoint = try normalizedEndpoint()
+        guard endpoint.scheme?.lowercased() != "http" || allowInsecureHTTP else {
+            throw SyncFailure("此地址使用未加密的 HTTP。请改用 HTTPS，或在连接配置中明确开启 HTTP 兼容选项。")
+        }
+        return endpoint
+    }
+    /// Reading an existing Keychain identity must not opt a legacy HTTP server
+    /// into network access or change its previously stored password key.
+    public func credentialIdentity() throws -> String {
+        try normalizedEndpoint().absoluteString + "\n" + username
+    }
+    private func normalizedEndpoint() throws -> URL {
+        let input = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty, !input.hasPrefix("/") else { throw VaultError.invalidPath }
+        let address = input.contains("://") ? input : "https://" + input
+        guard var parts = URLComponents(string: address),
               ["http", "https"].contains(parts.scheme?.lowercased() ?? ""), parts.host?.isEmpty == false,
               parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else {
-            throw SyncFailure("请输入完整的 HTTP(S) WebDAV 目录地址，账号填写在用户名栏。")
+            throw SyncFailure("请输入有效的 WebDAV 目录地址，默认使用 HTTPS；账号填写在用户名栏。")
         }
         if !parts.path.hasSuffix("/") { parts.path += "/" }
         guard let result = parts.url else { throw VaultError.invalidPath }

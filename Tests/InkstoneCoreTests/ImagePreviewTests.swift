@@ -28,7 +28,7 @@ private actor ImageLoadMeter {
 struct ImagePreviewTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["INKSTONE_INTEROP_URL"] != nil))
     func remoteImagePreviewDownloadsThumbnailAndRejectsOversizedResponse() async throws {
-        var settings = WebDAVSettings()
+        var settings = WebDAVSettings(); settings.allowInsecureHTTP = true
         settings.url = try #require(ProcessInfo.processInfo.environment["INKSTONE_INTEROP_URL"])
         settings.username = "interop"
         let remote = try WebDAV(settings: settings, password: "test-only")

@@ -163,7 +163,7 @@ final class LibraryStore: ObservableObject {
     }
     private var syncKey: String { "webdav." + favoriteKey }
     private func credentialKey() throws -> String {
-        let identity = syncKey + "\n" + (try webDAV.endpoint().absoluteString) + "\n" + webDAV.username
+        let identity = syncKey + "\n" + (try webDAV.credentialIdentity())
         return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     func saveSyncSettings() throws {
@@ -192,7 +192,7 @@ final class LibraryStore: ObservableObject {
     }
     private var canAutomaticallySync: Bool {
         syncForeground && automaticSync && !autoSyncPaused && !loading && !syncing
-            && mutationsInProgress == 0 && selected == nil && vault != nil
+            && mutationsInProgress == 0 && selected == nil && vault != nil && (try? webDAV.endpoint()) != nil
             && savedSyncSettings != nil && savedSyncSettings == webDAV && savedSyncPassword == webDAVPassword
     }
     private func rescheduleAutomaticSync() {
@@ -240,6 +240,7 @@ final class LibraryStore: ObservableObject {
     var syncSummary: String {
         if syncing { return "正在同步…" }
         if webDAV.url.isEmpty { return external ? "文件提供商管理同步" : "仅保存在本机 · 未配置同步" }
+        if (try? webDAV.endpoint()) == nil { return "连接配置需要确认 · 请检查地址及 HTTP 兼容选项" }
         if syncIssue != nil { return "同步失败 · 点此查看并重试" }
         if !syncConflicts.isEmpty { return "同步有冲突 · 需要核对" }
         if selected != nil { return "同步暂缓 · 关闭笔记后继续" }

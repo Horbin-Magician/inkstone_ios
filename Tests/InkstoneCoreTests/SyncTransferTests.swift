@@ -64,7 +64,7 @@ extension SyncTransferTests {
         for i in 0..<32 { try handle.write(contentsOf: Data(repeating: UInt8(i), count: 1024 * 1024)) }
         try handle.close()
         let hash = try SyncFile.hash(source)
-        var settings = WebDAVSettings()
+        var settings = WebDAVSettings(); settings.allowInsecureHTTP = true
         settings.url = try #require(ProcessInfo.processInfo.environment["INKSTONE_INTEROP_URL"])
         settings.username = "interop"
         let remote = try WebDAV(settings: settings, password: "test-only")

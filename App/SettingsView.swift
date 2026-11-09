@@ -26,7 +26,7 @@ struct SettingsView: View {
                 Text("iCloud 等文件提供商负责传输，下拉笔记列表可刷新。")
             }
             Section {
-                TextField("WebDAV 目录地址（与 PC 端相同）", text: $store.webDAV.url)
+                TextField("WebDAV 目录地址（默认 HTTPS）", text: $store.webDAV.url)
                     .autocorrectionDisabled()
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
@@ -37,6 +37,11 @@ struct SettingsView: View {
                     .textInputAutocapitalization(.never)
                     #endif
                 SecureField("密码或应用专用密码", text: $store.webDAVPassword)
+                Toggle("允许未加密 HTTP（兼容旧服务器）", isOn: $store.webDAV.allowInsecureHTTP)
+                if store.webDAV.allowInsecureHTTP {
+                    Text("HTTP 会以未加密方式传输账号凭据、笔记和附件。仅在确认需要兼容时开启，并使用明确的 http:// 地址。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Toggle("自动同步", isOn: Binding(
                     get: { store.automaticSync },
                     set: { store.setAutomaticSync($0) }
@@ -61,7 +66,7 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 DisclosureGroup("同步说明") {
-                    Text("两端使用同一个已存在的 WebDAV 目录，建议使用 HTTPS。自动或手动同步笔记与附件；空文件夹、书签及恢复记录不上传。双端修改会保留冲突副本。密码保存在此设备钥匙串中。服务器须支持强 ETag 和条件写入。")
+                    Text("两端使用同一个已存在的 WebDAV 目录，默认使用 HTTPS；HTTP 需明确开启兼容选项。自动或手动同步笔记与附件；空文件夹、书签及恢复记录不上传。双端修改会保留冲突副本。密码保存在此设备钥匙串中。服务器须支持强 ETag 和条件写入。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("同步状态") } footer: {
