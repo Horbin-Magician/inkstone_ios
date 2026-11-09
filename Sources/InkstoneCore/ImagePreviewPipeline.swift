@@ -68,7 +68,9 @@ public actor ImagePreviewPipeline {
         try Task.checkCancellation()
         if let result = cached(key) { return result }
         let data: Data
-        if let url = URL(string: source), let scheme = url.scheme {
+        if ObsidianImageReference(source: source) != nil {
+            data = try await loader(source)
+        } else if let url = URL(string: source), let scheme = url.scheme {
             guard ["http", "https"].contains(scheme.lowercased()), url.user == nil, url.password == nil else { throw VaultError.invalidPath }
             data = try await Self.download(url)
         } else { data = try await loader(source) }

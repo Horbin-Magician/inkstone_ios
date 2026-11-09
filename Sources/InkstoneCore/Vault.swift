@@ -326,9 +326,12 @@ public actor Vault {
     }
     /// Resolve relative attachments without allowing a scheme, hidden file, or symlink escape.
     public func attachment(_ source: String, from note: String) throws -> Data {
-        guard let parts = URLComponents(string: source), parts.scheme == nil, parts.host == nil,
-              !parts.path.hasPrefix("/") else { throw VaultError.invalidPath }
-        var components = (note as NSString).deletingLastPathComponent.split(separator: "/").map(String.init)
+        if let embed = ObsidianImageReference(source: source) {
+            return try obsidianImage(embed.target, from: note)
+        }
+        guard let parts = URLComponents(string: source), parts.scheme == nil, parts.host == nil else { throw VaultError.invalidPath }
+        // A leading slash denotes the vault root, never the device filesystem.
+        var components = parts.path.hasPrefix("/") ? [] : (note as NSString).deletingLastPathComponent.split(separator: "/").map(String.init)
         for component in parts.path.split(separator: "/") {
             if component == "." { continue }
             if component == ".." {
@@ -342,6 +345,45 @@ public actor Vault {
             guard size <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
             return try Data(contentsOf: file)
         }
+    }
+    private func obsidianImage(_ target: String, from note: String) throws -> Data {
+        guard !target.hasPrefix("//"), !target.contains(":") else { throw VaultError.invalidPath }
+        let rooted = target.hasPrefix("/")
+        let target = rooted ? String(target.dropFirst()) : target
+        // An explicit leading slash resolves only from the vault root.
+        func encoded(_ path: String) -> String {
+            path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "%?#"))) ?? path
+        }
+        let folder = (note as NSString).deletingLastPathComponent
+        let local = folder.isEmpty ? target : folder + "/" + target
+        for path in (rooted ? [target] : [local, target]) {
+            var components: [String] = []
+            for component in path.split(separator: "/") {
+                if component == "." { continue }
+                if component == ".." {
+                    guard !components.isEmpty else { throw VaultError.invalidPath }
+                    components.removeLast()
+                } else { components.append(String(component)) }
+            }
+            let candidate = components.joined(separator: "/")
+            let url = try fileURL(candidate)
+            if fm.fileExists(atPath: url.path) { return try attachment(encoded(candidate), from: "") }
+        }
+        // A bare filename is commonly stored in a separate Obsidian attachment folder.
+        guard !rooted, !target.contains("/"), let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        var matches: [String] = []
+        for case let file as URL in walker {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values.isSymbolicLink == true { walker.skipDescendants(); continue }
+            if values.isRegularFile == true && file.lastPathComponent == target {
+                matches.append(String(file.standardizedFileURL.resolvingSymlinksInPath().path.dropFirst(root.path.count + 1)))
+                if matches.count > 1 { throw SyncFailure("有多个同名图片，请在图片引用中填写完整路径。") }
+            }
+        }
+        guard let match = matches.first else { throw CocoaError(.fileReadNoSuchFile) }
+        return try attachment(encoded(match), from: "")
     }
     public func importAttachment(_ source: URL, from note: String) throws -> String {
         let access = source.startAccessingSecurityScopedResource()

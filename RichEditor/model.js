@@ -28,6 +28,25 @@ const marks = baseSchema.spec.marks.append({strike: {parseDOM: [{tag: 's'}, {tag
 export const schema = new Schema({nodes, marks});
 
 const tokenizer = new MarkdownIt('default', {html: true, linkify: false, typographer: false});
+export function obsidianImage(content) {
+  const [target, size = ''] = content.split('|', 2);
+  if (!/\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif|avif|svg)$/i.test(target)) return null;
+  const dimensions = /^([1-9][0-9]{0,4})(?:x([1-9][0-9]{0,4}))?$/.exec(size.trim());
+  return {target, width: dimensions?.[1], height: dimensions?.[2]};
+}
+tokenizer.inline.ruler.before('image', 'obsidian_image', (state, silent) => {
+  const match = /^!\[\[([^\]\n]+)\]\]/.exec(state.src.slice(state.pos));
+  if (!match) return false;
+  const image = obsidianImage(match[1]);
+  if (!image) {
+    if (!silent) { const token = state.push('raw_inline', '', 0); token.content = match[0]; }
+  } else if (!silent) {
+    const token = state.push('obsidian_image', '', 0);
+    token.meta = {src: 'inkstone-embed:' + encodeURIComponent(match[1]), alt: image.target};
+  }
+  state.pos += match[0].length;
+  return true;
+});
 tokenizer.inline.ruler.before('link', 'wiki', (state, silent) => {
   if (state.src.slice(state.pos, state.pos + 2) !== '[[' || state.linkLevel > 0) return false;
   const match = /^\[\[([^\]\n]+)\]\]/.exec(state.src.slice(state.pos));
@@ -64,6 +83,8 @@ const parser = new MarkdownParser(schema, {parse: (_source, environment) => envi
   th: {block: 'table_header', getAttrs: cellAttrs}, td: {block: 'table_cell', getAttrs: cellAttrs},
   html_block: {node: 'raw_block', getAttrs: token => ({source: token.content})},
   html_inline: {node: 'raw_inline', getAttrs: token => ({source: token.content})},
+  obsidian_image: {node: 'image', getAttrs: token => token.meta},
+  raw_inline: {node: 'raw_inline', getAttrs: token => ({source: token.content})},
   wiki: {node: 'wiki', getAttrs: token => token.meta}
 });
 // Markdown table cells have inline tokens rather than explicit paragraphs.
@@ -75,6 +96,10 @@ for (const name of ['th', 'td']) {
 
 export const serializer = new MarkdownSerializer({
   ...defaultMarkdownSerializer.nodes,
+  image(state, node) {
+    if (node.attrs.src.startsWith('inkstone-embed:')) state.write('![[' + decodeURIComponent(node.attrs.src.slice('inkstone-embed:'.length)) + ']]');
+    else defaultMarkdownSerializer.nodes.image(state, node);
+  },
   list_item(state, node) {
     if (node.attrs.checked != null) state.write(node.attrs.checked ? '[x] ' : '[ ] ');
     state.renderContent(node);

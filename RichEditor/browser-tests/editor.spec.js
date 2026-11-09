@@ -278,3 +278,15 @@ test('prewarmed shell accepts a document and retained editor receives reader cha
   await page.evaluate(() => inkstone.command('撤销'));
   expect(await markdown(page)).toBe('另一篇正文');
 });
+
+test('Obsidian image embeds use native loading and keep their size and source', async ({page}) => {
+  await load(page, 'before ![[/附件/中文 photo.png| 320x200]] after');
+  const image = page.locator('.ProseMirror img');
+  await expect(image).toHaveCount(1);
+  const url = new URL(await image.getAttribute('src'));
+  expect(url.protocol).toBe('inkstone-attachment:');
+  expect(decodeURIComponent(url.searchParams.get('source'))).toBe('inkstone-embed:/附件/中文 photo.png| 320x200');
+  await expect(image).toHaveCSS('width', '320px');
+  await expect(image).toHaveCSS('max-height', '200px');
+  expect(await markdown(page)).toBe('before ![[/附件/中文 photo.png| 320x200]] after');
+});

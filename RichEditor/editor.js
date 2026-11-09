@@ -1,3 +1,4 @@
+import {obsidianImage} from './model.js';
 import {EditorState, TextSelection} from 'prosemirror-state';
 import {EditorView} from 'prosemirror-view';
 import {baseKeymap, toggleMark, setBlockType, wrapIn, lift, chainCommands, exitCode} from 'prosemirror-commands';
@@ -152,13 +153,18 @@ document.querySelector('#link-form').addEventListener('submit', event => {
 document.querySelector('#cancel-link').onclick = () => { document.querySelector('#link-dialog').close(); view.focus(); };
 
 function imageURL(source) {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(source) && !/^https?:\/\//i.test(source)) return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(source) && !/^https?:\/\//i.test(source) && !source.startsWith('inkstone-embed:')) return '';
   return 'inkstone-attachment://file?source=' + encodeURIComponent(source) + '&context=' + encodeURIComponent(imageContext);
 }
 function imageView(node) {
   const dom = document.createElement('img');
   dom.dataset.attachmentSource = node.attrs.src;
   dom.src = imageURL(node.attrs.src); dom.alt = node.attrs.alt || '图片'; dom.title = node.attrs.title || '';
+  if (node.attrs.src.startsWith('inkstone-embed:')) {
+    const image = obsidianImage(decodeURIComponent(node.attrs.src.slice('inkstone-embed:'.length)));
+    if (image?.width) dom.style.width = image.width + 'px';
+    if (image?.height) { dom.style.maxHeight = image.height + 'px'; dom.style.objectFit = 'contain'; }
+  }
   return {dom};
 }
 function itemView(node, editorView, getPos) {

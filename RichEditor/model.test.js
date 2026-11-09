@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EditorState} from 'prosemirror-state';
-import {loadMarkdown, saveMarkdown, serializer, schema} from './model.js';
+import {loadMarkdown, saveMarkdown, serializer, schema, obsidianImage} from './model.js';
 
 const fixtures = [
   '', '\n\n', '\r\n', '# 中文 😀\r\n\r\n正文 **粗体** 和 *斜体*。\r\n',
@@ -105,4 +105,28 @@ for (const container of [
   reopened.doc.descendants(node => { if (node.isText && node.text === 'link') href = node.marks.find(mark => mark.type.name === 'link')?.attrs.href; });
   assert.equal(href, 'https://example.com');
   assert.equal(saveMarkdown(reopened.doc, reopened), saved);
+});
+
+test('Obsidian images render and retain syntax when the paragraph is edited', () => {
+  const source = 'before ![[附件/中文 photo.png|320x200]] after';
+  const loaded = loadMarkdown(source);
+  const image = loaded.doc.firstChild.child(1);
+  assert.equal(image.type.name, 'image');
+  assert.equal(decodeURIComponent(image.attrs.src), 'inkstone-embed:附件/中文 photo.png|320x200');
+  const changed = EditorState.create({doc: loaded.doc}).tr.insertText('edited ', 1).doc;
+  assert.equal(saveMarkdown(changed, loaded), 'edited ' + source);
+});
+
+test('Obsidian code, escaped embeds and non-image embeds remain literal', () => {
+  for (const source of ['`![[a.png]]`', '\\![[a.png]]', '![[note]]', '![[file.pdf]]']) {
+    const loaded = loadMarkdown(source);
+    let images = 0;
+    loaded.doc.descendants(node => { if (node.type.name === 'image') images++; });
+    assert.equal(images, 0, source);
+    assert.equal(saveMarkdown(loaded.doc, loaded), source);
+  }
+});
+
+test('Obsidian sizes allow padding used by existing notes', () => {
+  assert.deepEqual(obsidianImage('/附件/photo.png| 500 '), {target: '/附件/photo.png', width: '500', height: undefined});
 });

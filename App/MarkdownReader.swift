@@ -230,7 +230,8 @@ private struct MarkdownImage: View {
                 Image(decorative: thumbnail, scale: displayScale).resizable().scaledToFit()
                     .accessibilityLabel(alt.isEmpty ? "图片" : alt)
             } else { placeholder }
-        }.frame(maxWidth: MarkdownAppearance.metric("image-width"))
+        }.frame(maxWidth: ObsidianImageReference(source: source)?.width.map(CGFloat.init) ?? MarkdownAppearance.metric("image-width"))
+        .frame(maxHeight: ObsidianImageReference(source: source)?.height.map(CGFloat.init))
         .task(id: Request(source: source, scale: displayScale, context: context)) {
             thumbnail = nil; failed = false
             do {

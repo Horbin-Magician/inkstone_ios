@@ -89,3 +89,70 @@ struct MarkdownTests {
         #expect(document.links == [WikiLink(target: "目录/笔记", label: "名称")])
     }
 }
+
+struct ObsidianImageTests {
+    @Test func parsesImagesAndSizesWithoutIndexingAsNotes() {
+        let document = MarkdownDocument("前 ![[附件/中文 photo.png| 320x200 ]] 后 ![[a.jpg]] `![[code.png]]` ![[note]]")
+        let images = document.blocks[0].inline.compactMap { node -> ObsidianImageReference? in
+            guard case .image(let source, _) = node else { return nil }
+            return ObsidianImageReference(source: source)
+        }
+        #expect(images.count == 2)
+        #expect(images.first?.target == "附件/中文 photo.png")
+        #expect(images.first?.width == 320)
+        #expect(images.first?.height == 200)
+        #expect(document.links.isEmpty)
+    }
+    @Test func rootedImagesFromNestedNotesLoadActualPreview() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault")
+        let vault = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
+        let target = "00 默认收集箱/附件/Pasted image 20231215124340.png"
+        let file = root.appendingPathComponent(target)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try imageFixture(width: 80, height: 40).write(to: file)
+        let note = "01 知识库/2 自然科学/23 大气科学/PALM 模式.md"
+        // A same-path file under the note directory must not override a rooted reference.
+        let decoy = root.appendingPathComponent((note as NSString).deletingLastPathComponent).appendingPathComponent(target)
+        try FileManager.default.createDirectory(at: decoy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([0]).write(to: decoy)
+        let encoded = try #require(("/" + target).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed))
+        for markdown in ["![[/" + target + "]]", "![photo](" + encoded + ")"] {
+            let document = MarkdownDocument(markdown)
+            let node = try #require(document.blocks.first?.inline.first(where: { if case .image = $0 { return true }; return false }))
+            guard case .image(let source, _) = node else { Issue.record("Image did not parse"); continue }
+            let preview = try await ImagePreviewPipeline().preview(source: source,
+                context: ImageResourceContext(library: "test", notePath: note, generation: "0")) {
+                    try await vault.attachment($0, from: note)
+                }
+            #expect(preview.image.width == 80 && preview.image.height == 40)
+        }
+        for target in ["/../outside.png", "//server/image.png", "/.hidden/image.png"] {
+            let embed = try #require(ObsidianImageReference(target)?.source)
+            for source in [target, embed] {
+                await #expect(throws: (any Error).self) { try await vault.attachment(source, from: note) }
+            }
+        }
+    }
+    @Test func resolvesVaultImagesAndRejectsAmbiguousNames() async throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault")
+        let vault = try Vault(root: root, recovery: base.appendingPathComponent("recovery"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("assets"), withIntermediateDirectories: true)
+        let bytes = Data([1, 2, 3])
+        try bytes.write(to: root.appendingPathComponent("assets/中文 # photo.png"))
+        for target in ["中文 # photo.png", "assets/中文 # photo.png"] {
+            let source = try #require(ObsidianImageReference(target)?.source)
+            let actual = try await vault.attachment(source, from: "notes/deep/test.md")
+            #expect(actual == bytes)
+        }
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("other"), withIntermediateDirectories: true)
+        try bytes.write(to: root.appendingPathComponent("other/中文 # photo.png"))
+        let source = try #require(ObsidianImageReference("中文 # photo.png")?.source)
+        await #expect(throws: (any Error).self) { try await vault.attachment(source, from: "notes/test.md") }
+        let unsafe = try #require(ObsidianImageReference("../../outside.png")?.source)
+        await #expect(throws: (any Error).self) { try await vault.attachment(unsafe, from: "test.md") }
+    }
+}

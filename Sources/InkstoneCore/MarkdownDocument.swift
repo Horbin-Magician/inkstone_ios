@@ -182,7 +182,7 @@ public struct MarkdownDocument: Sendable {
         }
     }
 
-    private static let wikiRegex = try! NSRegularExpression(pattern: #"(?<!!)\[\[([^\]\n]+)\]\]"#)
+    private static let wikiRegex = try! NSRegularExpression(pattern: #"!?\[\[([^\]\n]+)\]\]"#)
     private static func wikiText(_ text: String) -> [MarkdownInline] {
         guard text.contains("[[") else { return [.text(text)] }
         var result: [MarkdownInline] = [], position = text.startIndex
@@ -190,7 +190,10 @@ public struct MarkdownDocument: Sendable {
             guard let range = Range(match.range, in: text), let capture = Range(match.range(at: 1), in: text) else { continue }
             result.append(.text(String(text[position..<range.lowerBound])))
             let parts = text[capture].split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-            if parts[0].isEmpty { result.append(.text(String(text[range]))) }
+            if text[range].hasPrefix("!") {
+                if let image = ObsidianImageReference(String(text[capture])) { result.append(.image(image.source, image.target)) }
+                else { result.append(.text(String(text[range]))) }
+            } else if parts[0].isEmpty { result.append(.text(String(text[range]))) }
             else { result.append(.wiki(parts[0], parts.count > 1 ? parts[1] : parts[0])) }
             position = range.upperBound
         }
