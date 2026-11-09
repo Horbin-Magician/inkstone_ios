@@ -24,26 +24,36 @@ extension Vault {
         }
         return file
     }
-    private func storageSize(_ file: URL) throws -> Int64 {
-        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-        guard values.isSymbolicLink != true else { throw VaultError.invalidPath }
-        if values.isRegularFile == true { return Int64(values.fileSize ?? 0) }
-        var total: Int64 = 0, scanError: Error?
-        guard let walker = fm.enumerator(at: file, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey], errorHandler: { _, error in scanError = error; return false }) else { throw CocoaError(.fileReadUnknown) }
+    private func storageUsage(_ file: URL) throws -> (bytes: Int64, containsLinks: Bool) {
+        // attributesOfItem uses the link itself, including dangling links. Never
+        // follow links while accounting for or deleting a saved folder tree.
+        func attributes(_ url: URL) throws -> (FileAttributeType?, Int64) {
+            let values = try fm.attributesOfItem(atPath: url.path)
+            return (values[.type] as? FileAttributeType, (values[.size] as? NSNumber)?.int64Value ?? 0)
+        }
+        let (type, size) = try attributes(file)
+        if type == .typeSymbolicLink { return (size, true) }
+        if type == .typeRegular { return (size, false) }
+        var total: Int64 = 0, containsLinks = false, scanError: Error?
+        guard let walker = fm.enumerator(at: file, includingPropertiesForKeys: nil, errorHandler: { _, error in scanError = error; return false }) else { throw CocoaError(.fileReadUnknown) }
         for case let child as URL in walker {
-            let values = try child.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
-            guard values.isSymbolicLink != true else { throw VaultError.invalidPath }
-            if values.isRegularFile == true { total += Int64(values.fileSize ?? 0) }
+            let (type, size) = try attributes(child)
+            if type == .typeSymbolicLink {
+                walker.skipDescendants()
+                containsLinks = true
+                total += size
+            } else if type == .typeRegular { total += size }
         }
         if let scanError { throw scanError }
-        return total
+        return (total, containsLinks)
     }
     public func recoveryStorage() throws -> [RecoveryStorageItem] {
         var items: [RecoveryStorageItem] = []
         func append(_ id: String, category: RecoveryStorageCategory, path: String, protected: Bool, recoverable: Bool = true) throws {
             let file = try storageURL(id)
             let date = try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
-            items.append(RecoveryStorageItem(id: id, category: category, path: path, bytes: try storageSize(file), date: date, protected: protected, canRestore: recoverable && (category == .syncBackup || category == .deletedFolder)))
+            let usage = try storageUsage(file)
+            items.append(RecoveryStorageItem(id: id, category: category, path: path, bytes: usage.bytes, date: date, protected: protected, canRestore: recoverable && !usage.containsLinks && (category == .syncBackup || category == .deletedFolder)))
         }
         for summary in try recoverySummaries() {
             try append(summary.file, category: .history, path: summary.path + " · " + summary.kind.rawValue, protected: summary.kind == .draft)
@@ -105,7 +115,7 @@ extension Vault {
         let destination = try fileURL(folder)
         guard !fm.fileExists(atPath: destination.path) else { throw VaultError.exists }
         if item.category == .deletedFolder {
-            _ = try storageSize(source) // validate the entire tree before copying
+            guard try !storageUsage(source).containsLinks else { throw VaultError.invalidPath }
             try coordinated(destination, writing: true) { try fm.copyItem(at: source, to: $0) }
         } else {
             let content = try storageURL(id + "/content")

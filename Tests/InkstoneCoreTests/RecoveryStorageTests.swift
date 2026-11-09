@@ -43,3 +43,33 @@ struct RecoveryStorageTests {
         #expect(try await vault.recoveryStorage().allSatisfy { $0.id != folder.id })
     }
 }
+
+extension RecoveryStorageTests {
+    @Test func deletedFolderLinksDoNotHideRecoveryCatalogOrTouchExternalFiles() async throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let outside = base.appendingPathComponent("outside.bin")
+        let original = Data("external data".utf8)
+        try original.write(to: outside)
+        _ = try await vault.create(path: "deleted/note.md", text: "retained body")
+        try fm.createSymbolicLink(at: root.appendingPathComponent("deleted/link"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: root.appendingPathComponent("deleted/broken"), withDestinationURL: base.appendingPathComponent("missing"))
+        try await vault.trashFolder(path: "deleted")
+        let items = try await vault.recoveryStorage()
+        #expect(items.contains { $0.category == .history })
+        let folder = try #require(items.first { $0.category == .deletedFolder })
+        #expect(!folder.canRestore)
+        #expect(folder.bytes >= Data("retained body".utf8).count)
+        await #expect(throws: VaultError.self) { _ = try await vault.restoreRecoveryStorage(folder.id) }
+        try await vault.removeRecoveryStorage(folder.id)
+        #expect(try Data(contentsOf: outside) == original)
+        #expect(try await vault.recoveryStorage().allSatisfy { $0.id != folder.id })
+        // The regular note remains independently recoverable from its history record.
+        let summary = try #require(try await vault.recoverySummaries().first)
+        let record = try await vault.recoveryRecord(summary)
+        #expect(try await vault.restoreCopy(record).text == "retained body")
+    }
+}

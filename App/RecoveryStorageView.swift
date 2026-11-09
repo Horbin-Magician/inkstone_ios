@@ -26,6 +26,10 @@ struct RecoveryStorageView: View {
                             Text(item.path).lineLimit(2)
                             Text(size(item.bytes) + " · " + item.date.formatted(date: .abbreviated, time: .shortened))
                                 .font(.caption).foregroundStyle(.secondary)
+                            if !item.canRestore && (item.category == .syncBackup || item.category == .deletedFolder) {
+                                Text("备份不完整或包含符号链接，暂不能整项恢复；正文可在历史版本中恢复。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
                             if item.protected { Label("恢复流程使用中，禁止清理", systemImage: "lock").font(.caption) }
                             HStack {
                                 if item.canRestore {
