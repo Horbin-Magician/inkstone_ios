@@ -22,11 +22,11 @@ public struct AutoSyncSchedule: Sendable {
         nextAttempt = min(nextAttempt, now.addingTimeInterval(3))
     }
 
-    public func isDue(now: Date = Date()) -> Bool {
-        now >= nextAttempt
-            && now >= (retryAfter ?? .distantPast)
-            && now >= (lastAttempt?.addingTimeInterval(30) ?? .distantPast)
+    /// A single deadline includes debounce, retry backoff and minimum interval.
+    public var dueDate: Date {
+        max(nextAttempt, retryAfter ?? .distantPast, lastAttempt?.addingTimeInterval(30) ?? .distantPast)
     }
+    public func isDue(now: Date = Date()) -> Bool { now >= dueDate }
 
     public mutating func started(now: Date = Date()) { lastAttempt = now }
 

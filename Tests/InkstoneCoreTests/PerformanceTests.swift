@@ -169,3 +169,24 @@ extension PerformanceTests {
         print("SEARCH_PRESENTATION optimized near8MiB_searchAndSummary=\(start.duration(to: searched)) render10=\(searched.duration(to: clock.now)) bytes=\(bytes)")
     }
 }
+
+extension PerformanceTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["INKSTONE_SCHEDULER_BENCHMARK"] == "1"))
+    @MainActor func syncIdleWakeups() async throws {
+        var polls = 0, deadlines = 0
+        let polling = Task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                polls += 1
+            }
+        }
+        let scheduler = AutoSyncScheduler()
+        scheduler.schedule(at: Date().addingTimeInterval(120)) { deadlines += 1 }
+        try await Task.sleep(for: .milliseconds(5200))
+        polling.cancel()
+        scheduler.schedule(at: nil) {}
+        await polling.value
+        print("SCHEDULER_BENCH idle5.2s oldPolling=\(polls) deadlineCallbacks=\(deadlines)")
+        #expect(polls >= 4 && deadlines == 0)
+    }
+}

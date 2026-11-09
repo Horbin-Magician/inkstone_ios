@@ -11,17 +11,19 @@ final class LibraryStore: ObservableObject {
     @Published var lastSync: Date?
     @Published var syncConflicts: [String] = []
     var searchTerm = ""
-    @Published var webDAV = WebDAVSettings()
-    @Published var webDAVPassword = ""
+    @Published var webDAV = WebDAVSettings() { didSet { rescheduleAutomaticSync() } }
+    @Published var webDAVPassword = "" { didSet { rescheduleAutomaticSync() } }
     @Published var syncStatus = "尚未同步"
-    @Published var syncing = false
-    @Published var automaticSync = true
+    @Published var syncing = false { didSet { rescheduleAutomaticSync() } }
+    @Published var automaticSync = true { didSet { rescheduleAutomaticSync() } }
     @Published var syncIssue: String?
-    @Published var autoSyncPaused = false
-    private var autoSyncSchedule = AutoSyncSchedule()
-    private var savedSyncSettings: WebDAVSettings?
-    private var savedSyncPassword = ""
-    private var mutationsInProgress = 0
+    @Published var autoSyncPaused = false { didSet { rescheduleAutomaticSync() } }
+    private var autoSyncSchedule = AutoSyncSchedule() { didSet { rescheduleAutomaticSync() } }
+    private var savedSyncSettings: WebDAVSettings? { didSet { rescheduleAutomaticSync() } }
+    private var savedSyncPassword = "" { didSet { rescheduleAutomaticSync() } }
+    private var mutationsInProgress = 0 { didSet { rescheduleAutomaticSync() } }
+    private let autoSyncScheduler = AutoSyncScheduler()
+    private var syncForeground = false
     private var batchDepth = 0
     @Published var notes: [Note] = []
     private(set) var noteIndex = NoteIndex(notes: [])
@@ -31,9 +33,9 @@ final class LibraryStore: ObservableObject {
     @Published var warnings: [String] = []
     @Published var error: String?
     @Published var vaultName = "我的墨砚"
-    @Published var loading = false
+    @Published var loading = false { didSet { rescheduleAutomaticSync() } }
     @Published var favorites: Set<String> = []
-    @Published var selected: Note?
+    @Published var selected: Note? { didSet { rescheduleAutomaticSync() } }
     @Published var requestedNote: Note?
     @Published var records: [RecoverySummary] = []
     @Published var external = false
@@ -180,14 +182,26 @@ final class LibraryStore: ObservableObject {
         defaults.set(enabled, forKey: syncKey + ".automatic")
         if enabled { autoSyncSchedule.requestForeground() }
     }
-    func requestForegroundSync() { autoSyncSchedule.requestForeground() }
+    func setSyncForeground(_ active: Bool) {
+        guard syncForeground != active else { return }
+        syncForeground = active
+        if active { autoSyncSchedule.requestForeground() }
+        rescheduleAutomaticSync()
+    }
+    private var canAutomaticallySync: Bool {
+        syncForeground && automaticSync && !autoSyncPaused && !loading && !syncing
+            && mutationsInProgress == 0 && selected == nil && vault != nil
+            && savedSyncSettings != nil && savedSyncSettings == webDAV && savedSyncPassword == webDAVPassword
+    }
+    private func rescheduleAutomaticSync() {
+        autoSyncScheduler.schedule(at: canAutomaticallySync ? autoSyncSchedule.dueDate : nil) { [weak self] in
+            await self?.autoSyncIfNeeded()
+        }
+    }
 
     func autoSyncIfNeeded() async {
-        guard !Task.isCancelled, automaticSync, !autoSyncPaused,
-              !loading, !syncing, mutationsInProgress == 0, selected == nil,
-              let savedSyncSettings, savedSyncSettings == webDAV,
-              savedSyncPassword == webDAVPassword,
-              autoSyncSchedule.isDue() else { return }
+        defer { rescheduleAutomaticSync() }
+        guard !Task.isCancelled, canAutomaticallySync, autoSyncSchedule.isDue() else { return }
         await sync(automatically: true)
     }
 

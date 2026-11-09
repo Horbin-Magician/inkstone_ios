@@ -159,14 +159,8 @@ struct LibraryView: View {
         } message: { Text(store.error ?? "") }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await store.refresh(); await store.importSharedInbox() } } }
         .onChange(of: libraryInteractionActive) { _, active in store.autoSyncPaused = active }
-        .task(id: scenePhase) {
-            guard scenePhase == .active else { return }
-            store.requestForegroundSync()
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-                await store.autoSyncIfNeeded()
-            }
-        }
+        .task(id: scenePhase) { store.setSyncForeground(scenePhase == .active) }
+        .onDisappear { store.setSyncForeground(false) }
         .task(id: searchRequest) {
             let request = searchRequest
             guard !request.query.isEmpty else { searchResults = []; searchPresentations = [:]; completedSearch = nil; return }

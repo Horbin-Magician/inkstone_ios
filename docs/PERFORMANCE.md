@@ -133,3 +133,9 @@ python3 scripts/test-webdav-interop.py
 这些数据证明正文摘要扫描移出了列表渲染路径，不代表真实列表一次会渲染万行，也不代表已测得真机输入延迟或帧率。优化后的首次结果必须等待后台摘要准备完成；大笔记仍有约 1.46 秒后台扫描开销。搜索筛选继续使用 Foundation 的中文、子串、大小写与重音匹配语义；旧的只返回笔记 API 不生成正文摘要。
 
 复现：`INKSTONE_SEARCH_PRESENTATION_BENCHMARK=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test -c release --filter searchPresentationOptimized`。基线在改动前运行 `searchPresentationBaseline`。`time -l` 日志包含编译／测试进程，不能作为应用自身内存峰值；真机内存、输入、大图、多附件和磁盘指标仍待后续测量。
+
+## 第三阶段：到期时间驱动的同步调度
+
+`AutoSyncSchedule.dueDate` 统一合并防抖、失败退避及最小同步间隔；独立 `AutoSyncScheduler` 只管理一次可取消的等待，网络同步和文件提交仍由原有流程管理。前后台、编辑器／设置暂停、配置、加载和本地写入状态变化会重新调度；进入后台撤销尚未开始的等待。回调开始前释放计时任务，避免同步状态变化误取消正在运行的事务。等待函数可注入，测试用可控时钟验证旧回调失效、暂停恢复及重复调度不创建新等待。
+
+同一 Release 测试进程同时运行旧的一秒检查循环与新调度器，空闲观测 5.2 秒：旧循环唤醒 5 次，新调度回调 0 次（到期时间为 120 秒后）。这验证了无意义的定时检查已消除，不是电池或系统总唤醒量测量。原始日志：`.build/performance/stage3/scheduler.log`；复现变量 `INKSTONE_SCHEDULER_BENCHMARK=1`，测试 `syncIdleWakeups`。调度相关 8 项回归通过，iOS 模拟器 Release 构建通过。
