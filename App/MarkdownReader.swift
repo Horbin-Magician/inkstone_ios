@@ -4,7 +4,14 @@ import InkstoneCore
 private struct AttachmentLoaderKey: EnvironmentKey {
     static let defaultValue: (@Sendable (String) async throws -> Data)? = nil
 }
+private struct ImageResourceContextKey: EnvironmentKey {
+    static let defaultValue = ImageResourceContext(library: "unscoped", notePath: "", generation: "")
+}
 extension EnvironmentValues {
+    var imageResourceContext: ImageResourceContext {
+        get { self[ImageResourceContextKey.self] }
+        set { self[ImageResourceContextKey.self] = newValue }
+    }
     var attachmentLoader: (@Sendable (String) async throws -> Data)? {
         get { self[AttachmentLoaderKey.self] }
         set { self[AttachmentLoaderKey.self] = newValue }
@@ -156,17 +163,7 @@ private struct MarkdownInlineView: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
                 if segment.count == 1, case .image(let source, let alt) = segment[0] {
-                    if let url = URL(string: source), ["https", "http"].contains(url.scheme?.lowercased() ?? "") {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image): image.resizable().scaledToFit().accessibilityLabel(alt.isEmpty ? "图片" : alt)
-                            case .failure: Label(alt.isEmpty ? "图片加载失败" : alt, systemImage: "photo").foregroundStyle(.secondary)
-                            default: ProgressView().accessibilityLabel("加载图片")
-                            }
-                        }.frame(maxWidth: 640)
-                    } else {
-                        LocalMarkdownImage(source: source, alt: alt)
-                    }
+                    MarkdownImage(source: source, alt: alt)
                 } else { Text(attributed(segment)) }
             }
         }
@@ -201,14 +198,15 @@ private struct MarkdownInlineView: View {
     }
 }
 
-private struct LocalMarkdownImage: View {
+private struct MarkdownImage: View {
     @Environment(\.attachmentLoader) private var loader
+    @Environment(\.imageResourceContext) private var context
     let source: String
     let alt: String
     @Environment(\.displayScale) private var displayScale
     @State private var thumbnail: CGImage?
     @State private var failed = false
-    private struct Request: Equatable { let source: String; let scale: CGFloat }
+    private struct Request: Equatable { let source: String; let scale: CGFloat; let context: ImageResourceContext }
     var body: some View {
         Group {
             if let thumbnail {
@@ -216,25 +214,22 @@ private struct LocalMarkdownImage: View {
                     .accessibilityLabel(alt.isEmpty ? "图片" : alt)
             } else { placeholder }
         }.frame(maxWidth: 640)
-        .task(id: Request(source: source, scale: displayScale)) {
+        .task(id: Request(source: source, scale: displayScale, context: context)) {
             thumbnail = nil; failed = false
             do {
-                guard let data = try await loader?(source) else { failed = true; return }
-                try Task.checkCancellation()
-                let pixels = Int(640 * displayScale)
-                let worker = Task.detached(priority: .userInitiated) {
-                    guard !Task.isCancelled else { return nil as CGImage? }
-                    return AttachmentThumbnail.make(data: data, maxPixelSize: pixels)
+                let load = loader
+                let preview = try await ImagePreviewPipeline.shared.preview(source: source, context: context, maxPixelSize: Int(640 * displayScale)) { source in
+                    guard let load else { throw VaultError.invalidPath }
+                    return try await load(source)
                 }
-                let image = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 try Task.checkCancellation()
-                thumbnail = image; failed = image == nil
+                thumbnail = preview.image
             } catch is CancellationError {} catch { failed = true }
         }
     }
     private var placeholder: some View {
         Group {
-            if failed { Label(alt.isEmpty ? "本地图片不可用：" + source : alt, systemImage: "photo").foregroundStyle(.secondary) }
+            if failed { Label(alt.isEmpty ? "图片不可用：" + source : alt, systemImage: "photo").foregroundStyle(.secondary) }
             else { ProgressView("加载图片") }
         }
     }

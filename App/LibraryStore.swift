@@ -42,6 +42,8 @@ final class LibraryStore: ObservableObject {
     private(set) var vault: Vault?
     private var scopedURL: URL?
     private var root: URL?
+    @Published private(set) var imageRevision = 0
+    var imageLibraryID: String { root?.standardizedFileURL.absoluteString ?? "unopened" }
     private var started = false
     private var importingShared = false
     private static var previewRoot: URL? {
@@ -133,7 +135,7 @@ final class LibraryStore: ObservableObject {
     func refresh(reportErrors: Bool = true) async {
         guard let vault, !loading, batchDepth == 0 else { return }
         loading = true; defer { loading = false }
-        do { let result = try await vault.scan(); apply(result)
+        do { let result = try await vault.scan(); imageRevision &+= 1; apply(result)
             if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" } }
         catch {
             if reportErrors { self.error = error.localizedDescription }

@@ -73,6 +73,10 @@ struct EditorView: View {
         let needed: Bool
     }
     private var parsedDocument: MarkdownDocument? { parsedSource == text ? document : nil }
+    private var imageContext: ImageResourceContext {
+        ImageResourceContext(library: store.imageLibraryID, notePath: current.path,
+            generation: richDocumentID.uuidString + ":" + String(store.imageRevision))
+    }
     private var dirty: Bool { text != current.text || richEditor.session.hasPendingSnapshot }
     init(note: Note, onClose: (() -> Void)? = nil) {
         self.onClose = onClose
@@ -109,6 +113,7 @@ struct EditorView: View {
                         VStack(alignment: .leading, spacing: 18) {
                             if let document = parsedDocument {
                                 MarkdownReader(blocks: document.blocks, openLink: openLink, toggleTask: toggleTask, openAttachment: previewAttachment)
+                                    .environment(\.imageResourceContext, imageContext)
                                     .environment(\.attachmentLoader, { [vault = store.vault, path = current.path] source in
                                         guard let vault else { throw VaultError.invalidPath }
                                         return try await vault.attachment(source, from: path)
@@ -130,7 +135,7 @@ struct EditorView: View {
                 } else {
                     if !sourceEditing {
                         RichMarkdownEditor(text: $text, focused: $editorFocused, composing: Binding(get: { composing }, set: { composing = $0 }),
-                            documentID: richDocumentID, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
+                            documentID: richDocumentID, imageContext: imageContext, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
                             titles: store.linkTitles, bridge: richEditor,
                             loadAttachment: { [vault = store.vault, path = current.path] source in
                                 guard let vault else { throw VaultError.invalidPath }

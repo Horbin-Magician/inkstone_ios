@@ -195,3 +195,15 @@ test('navigation snapshot does not interrupt marked composition', async ({page})
   await expect(page.locator('.ProseMirror')).toHaveAttribute('contenteditable', 'true');
   await page.locator('.ProseMirror').dispatchEvent('compositionend');
 });
+
+test('remote images use the bounded native loader and refresh their scoped identity', async ({page}) => {
+  await load(page, '');
+  await page.evaluate(() => inkstone.load('![remote](https://example.com/large.png)', 'image-note', 0, 'library-one-note-a'));
+  const image = page.locator('.ProseMirror img[data-attachment-source]');
+  const original = new URL(await image.getAttribute('src'));
+  expect(original.protocol).toBe('inkstone-attachment:');
+  expect(original.searchParams.get('source')).toBe('https://example.com/large.png');
+  expect(original.searchParams.get('context')).toBe('library-one-note-a');
+  await page.evaluate(() => inkstone.setImageContext('library-two-note-a'));
+  expect(new URL(await image.getAttribute('src')).searchParams.get('context')).toBe('library-two-note-a');
+});

@@ -65,6 +65,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
     @Binding var focused: Bool
     @Binding var composing: Bool
     let documentID: UUID
+    let imageContext: ImageResourceContext
     let fontSize: Double
     let lineSpacing: Double
     let titles: [String]
@@ -108,6 +109,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         coordinator.parent = self
         let loader = self.loadAttachment
         coordinator.attachments.loader = { source in try await loader(source) }
+        coordinator.attachments.context = imageContext
         coordinator.enabled = enabled
         coordinator.synchronize()
     }
@@ -120,6 +122,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var enabled = true
         var lastSource: String?
         var lastID: UUID?
+        var lastImageContext: String?
         var revision = -1
         var lastFocus: Bool?
         var lastEnabled: Bool?
@@ -127,7 +130,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var lastTitles: [String] = []
         init(_ parent: RichMarkdownEditor) {
             self.parent = parent
-            attachments = RichAttachmentHandler(loader: parent.loadAttachment)
+            attachments = RichAttachmentHandler(loader: parent.loadAttachment, context: parent.imageContext)
         }
         func call(_ function: String, _ arguments: [Any] = []) {
             guard let data = try? JSONSerialization.data(withJSONObject: arguments), let json = String(data: data, encoding: .utf8) else { return }
@@ -139,10 +142,15 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             guard ready else { return }
             if lastID != parent.documentID {
                 lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil; lastEnabled = nil
-                call("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion])
+                lastImageContext = parent.imageContext.token
+                call("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion, parent.imageContext.token])
             } else if lastSource != parent.text {
                 lastSource = parent.text; lastEnabled = nil
                 call("setSource", [parent.text, parent.documentID.uuidString])
+            }
+            if lastImageContext != parent.imageContext.token {
+                lastImageContext = parent.imageContext.token
+                call("setImageContext", [parent.imageContext.token])
             }
             if lastEnabled != enabled {
                 lastEnabled = enabled; call("setEnabled", [enabled])
@@ -218,29 +226,25 @@ struct RichMarkdownEditor: RichEditorRepresentable {
 /// No filesystem URL or note-provided HTML is exposed to the web document.
 @MainActor final class RichAttachmentHandler: NSObject, WKURLSchemeHandler {
     var loader: @Sendable (String) async throws -> Data
+    var context: ImageResourceContext { didSet { if oldValue != context { cancelAll() } } }
     private var jobs: [ObjectIdentifier: Task<Void, Never>] = [:]
-    init(loader: @escaping @Sendable (String) async throws -> Data) { self.loader = loader }
+    init(loader: @escaping @Sendable (String) async throws -> Data, context: ImageResourceContext) { self.loader = loader; self.context = context }
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
         let key = ObjectIdentifier(urlSchemeTask)
         guard let url = urlSchemeTask.request.url,
               let source = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "source" })?.value else {
             urlSchemeTask.didFailWithError(URLError(.badURL)); return
         }
-        let load = loader
+        guard URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "context" })?.value == context.token else {
+            urlSchemeTask.didFailWithError(URLError(.cancelled)); return
+        }
+        let load = loader, context = context
         jobs[key] = Task { [weak self] in
             defer { self?.jobs[key] = nil }
             do {
-                let original = try await load(source)
+                let preview = try await ImagePreviewPipeline.shared.preview(source: source, context: context, loader: load)
                 try Task.checkCancellation()
-                let worker = Task.detached(priority: .userInitiated) {
-                    guard !Task.isCancelled else { return nil as Data? }
-                    return AttachmentThumbnail.webPreview(data: original)
-                }
-                let preview = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
-                try Task.checkCancellation()
-                let data = preview ?? original
-                let ext = (URLComponents(string: source)?.path as NSString?)?.pathExtension ?? ""
-                let mime = preview != nil ? "image/png" : (UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream")
+                let data = preview.data, mime = preview.mimeType
                 urlSchemeTask.didReceive(URLResponse(url: url, mimeType: mime, expectedContentLength: data.count, textEncodingName: nil))
                 urlSchemeTask.didReceive(data); urlSchemeTask.didFinish()
             } catch {

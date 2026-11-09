@@ -8,7 +8,7 @@ import {tableEditing, goToNextCell, addRowAfter, deleteRow, addColumnAfter, dele
 import {schema, loadMarkdown, saveMarkdown} from './model.js';
 
 let loaded, view, session, revision = 0, lastSource, imageBookmark, composition = false;
-let frozen = false, editorEnabled = true;
+let frozen = false, editorEnabled = true, imageContext = "";
 let publishTimer, serializedRevision = -1, serializedText;
 const post = value => window.webkit?.messageHandlers.richEditor.postMessage({...value, session});
 const editor = document.querySelector('#editor');
@@ -159,12 +159,12 @@ document.querySelector('#link-form').addEventListener('submit', event => {
 document.querySelector('#cancel-link').onclick = () => { document.querySelector('#link-dialog').close(); view.focus(); };
 
 function imageURL(source) {
-  if (/^https?:\/\//i.test(source)) return source;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(source)) return '';
-  return 'inkstone-attachment://file?source=' + encodeURIComponent(source);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(source) && !/^https?:\/\//i.test(source)) return '';
+  return 'inkstone-attachment://file?source=' + encodeURIComponent(source) + '&context=' + encodeURIComponent(imageContext);
 }
 function imageView(node) {
   const dom = document.createElement('img');
+  dom.dataset.attachmentSource = node.attrs.src;
   dom.src = imageURL(node.attrs.src); dom.alt = node.attrs.alt || '图片'; dom.title = node.attrs.title || '';
   return {dom};
 }
@@ -185,8 +185,8 @@ function itemView(node, editorView, getPos) {
   return {dom, contentDOM};
 }
 
-function initialize(source, token, initialRevision = 0) {
-  frozen = false;
+function initialize(source, token, initialRevision = 0, context = imageContext) {
+  frozen = false; imageContext = context;
   clearTimeout(publishTimer); publishTimer = null; serializedRevision = -1;
   try {
     loaded = loadMarkdown(source); revision = token === session ? revision + 1 : initialRevision;
@@ -274,6 +274,11 @@ window.inkstone = {
   focus(focused) { if (view) { if (focused) view.focus(); else view.dom.blur(); } },
   setEnabled(enabled) { editorEnabled = enabled; if (view) view.setProps({editable: () => enabled && !frozen}); toolbar.inert = !enabled || frozen; },
   setAppearance(size, spacing) { document.documentElement.style.setProperty('--body-size', size + 'px'); document.documentElement.style.setProperty('--line-spacing', spacing + 'px'); },
+  setImageContext(context) {
+    if (context === imageContext) return;
+    imageContext = context;
+    view?.dom.querySelectorAll('img[data-attachment-source]').forEach(img => { img.src = imageURL(img.dataset.attachmentSource); });
+  },
   setTitles(titles) {
     const datalist = document.querySelector('#note-targets'); datalist.replaceChildren();
     for (const title of titles) { const option = document.createElement('option'); option.value = '[[' + title + ']]'; datalist.appendChild(option); }

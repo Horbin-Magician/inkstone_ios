@@ -31,6 +31,13 @@ class DAV(http.server.BaseHTTPRequestHandler):
 
     def dispatch(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if self.command == 'GET' and self.path.startswith('/image-test/'):
+            with lock:
+                current = objects.get('/dav/inkstone/objects/' + self.path.removeprefix('/image-test/'))
+            try:
+                return self.respond(404) if current is None else self.respond(200, current)
+            except (BrokenPipeError, ConnectionResetError):
+                return  # Expected when the bounded image download cancels.
         expected = 'Basic ' + base64.b64encode(b'interop:test-only').decode()
         if self.headers.get('Authorization') != expected:
             return self.respond(401)
@@ -68,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='inkstone-interop-') as temp:
     env['INKSTONE_INTEROP_URL'] = f'http://127.0.0.1:{server.server_port}/dav/'
     env['INKSTONE_INTEROP_DESKTOP'] = str(desktop / 'target/debug/inkstone-mobile-interop')
     try:
-        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter \"desktopHTTPInterop|webDAVFileTransport\"'], cwd=repo, env=env, check=True)
+        subprocess.run(['bash', '-c', 'source scripts/developer_env.sh; swift test --filter \"desktopHTTPInterop|webDAVFileTransport|remoteImagePreview\"'], cwd=repo, env=env, check=True)
         manifest = json.loads(objects['/dav/inkstone/manifest.json'])
         assert manifest['version'] == 1
         print('PASS: actual Rust desktop core and Swift mobile core exchanged notes, attachments, moves, conflicts and deletions over HTTP WebDAV.')
