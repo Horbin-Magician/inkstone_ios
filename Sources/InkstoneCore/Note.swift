@@ -40,6 +40,31 @@ public struct Note: Identifiable, Hashable, Sendable {
     }
 }
 
+/// Immutable presentation data produced alongside background search results.
+public struct NoteSearchResult: Sendable {
+    public let note: Note
+    public let summary: String
+    /// UTF-16 ranges into summary, suitable for Foundation and UI conversion.
+    public let highlights: [NSRange]
+    init(note: Note, terms: [String]) {
+        self.note = note
+        if let term = terms.first, let match = note.text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) {
+            let start = note.text.index(match.lowerBound, offsetBy: -35, limitedBy: note.text.startIndex) ?? note.text.startIndex
+            summary = (start == note.text.startIndex ? "" : "…") + String(note.text[start...].prefix(150)).replacingOccurrences(of: "\n", with: " ")
+        } else { summary = note.excerpt }
+        var ranges: [NSRange] = []
+        for term in terms {
+            var remaining = summary.startIndex..<summary.endIndex
+            while let match = summary.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: remaining) {
+                guard match.lowerBound < match.upperBound else { break }
+                ranges.append(NSRange(match, in: summary))
+                remaining = match.upperBound..<summary.endIndex
+            }
+        }
+        highlights = ranges
+    }
+}
+
 public struct WikiLink: Hashable, Sendable {
     public let target: String
     public let label: String
@@ -123,31 +148,37 @@ public struct NoteIndex: Sendable {
     /// Bounded parallel scans preserve Foundation's locale-aware substring semantics.
     /// Each child scans a disjoint range and checks cancellation between notes.
     public static func searchConcurrently(_ notes: [Note], query: String, alreadySorted: Bool = false) async -> [Note] {
+        await parallelSearch(notes, query: query, alreadySorted: alreadySorted, presentation: false).map(\.note)
+    }
+    public static func searchResultsConcurrently(_ notes: [Note], query: String, alreadySorted: Bool = false) async -> [NoteSearchResult] {
+        await parallelSearch(notes, query: query, alreadySorted: alreadySorted, presentation: true)
+    }
+    private static func parallelSearch(_ notes: [Note], query: String, alreadySorted: Bool, presentation: Bool) async -> [NoteSearchResult] {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
         let workers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount), max(1, (notes.count + 255) / 256))
         let size = max(1, (notes.count + workers - 1) / workers)
-        let chunks = await withTaskGroup(of: (Int, [Note]).self) { group in
+        let chunks = await withTaskGroup(of: (Int, [NoteSearchResult]).self) { group in
             for start in stride(from: 0, to: notes.count, by: size) {
                 let end = min(start + size, notes.count)
                 group.addTask {
-                    var matches: [Note] = []
+                    var matches: [NoteSearchResult] = []
                     for index in start..<end {
                         if Task.isCancelled { return (start, []) }
                         let note = notes[index]
                         if terms.allSatisfy({ note.path.localizedStandardContains($0) || note.text.localizedStandardContains($0) }) {
-                            matches.append(note)
+                            matches.append(NoteSearchResult(note: note, terms: presentation ? terms : []))
                         }
                     }
                     return (start, matches)
                 }
             }
-            var chunks: [(Int, [Note])] = []
+            var chunks: [(Int, [NoteSearchResult])] = []
             for await chunk in group { chunks.append(chunk) }
             return chunks
         }
         guard !Task.isCancelled else { return [] }
         let result = chunks.sorted { $0.0 < $1.0 }.flatMap { $0.1 }
-        return alreadySorted ? result : result.sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+        return alreadySorted ? result : result.sorted { $0.note.modified == $1.note.modified ? $0.note.path < $1.note.path : $0.note.modified > $1.note.modified }
     }
     public static func creationPath(_ target: String, from: String) throws -> String {
         let raw = String(target.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0])

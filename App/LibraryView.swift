@@ -32,6 +32,7 @@ struct LibraryView: View {
     }
     @State private var completedSearch: SearchRequest?
     @State private var searchResults: [Note] = []
+    @State private var searchPresentations: [String: NoteSearchResult] = [:]
     private var searchRequest: SearchRequest { SearchRequest(query: query, revision: store.notesRevision) }
     private var searching: Bool { !query.isEmpty && completedSearch != searchRequest }
     private var libraryInteractionActive: Bool {
@@ -168,12 +169,14 @@ struct LibraryView: View {
         }
         .task(id: searchRequest) {
             let request = searchRequest
-            guard !request.query.isEmpty else { searchResults = []; completedSearch = nil; return }
+            guard !request.query.isEmpty else { searchResults = []; searchPresentations = [:]; completedSearch = nil; return }
             do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
             let notes = store.browsableNotes
-            let results = await NoteIndex.searchConcurrently(notes, query: request.query, alreadySorted: true)
+            let results = await NoteIndex.searchResultsConcurrently(notes, query: request.query, alreadySorted: true)
             guard !Task.isCancelled else { return }
-            searchResults = results; completedSearch = request
+            searchResults = results.map(\.note)
+            searchPresentations = Dictionary(uniqueKeysWithValues: results.map { ($0.note.path, $0) })
+            completedSearch = request
         }
     }
     private var compactSelection: Binding<Note?> {
@@ -345,8 +348,10 @@ struct LibraryView: View {
                     Spacer(minLength: 0)
                     Text(note.modified, format: .dateTime.month().day()).font(.caption2).foregroundStyle(.tertiary)
                 }
-                if !snippet(note).isEmpty {
-                    Text(highlighted(snippet(note))).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                let presentation = query.isEmpty ? nil : searchPresentations[note.path]
+                let summary = presentation?.summary ?? note.excerpt
+                if !summary.isEmpty {
+                    Text(highlighted(summary, ranges: presentation?.highlights ?? [])).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if !note.folder.isEmpty && (scope != .folders || !query.isEmpty) {
                     Text(note.folder).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -365,21 +370,14 @@ struct LibraryView: View {
             deleteButton(note)
         }
     }
-    private func snippet(_ note: Note) -> String {
-        guard let term = query.split(whereSeparator: \.isWhitespace).first,
-              let range = note.text.range(of: String(term), options: [.caseInsensitive, .diacriticInsensitive]) else { return note.excerpt }
-        let start = note.text.index(range.lowerBound, offsetBy: -35, limitedBy: note.text.startIndex) ?? note.text.startIndex
-        return (start == note.text.startIndex ? "" : "…") + String(note.text[start...].prefix(150)).replacingOccurrences(of: "\n", with: " ")
-    }
-    private func highlighted(_ value: String) -> AttributedString {
+    private func highlighted(_ value: String, ranges: [NSRange]) -> AttributedString {
         var result = AttributedString(value)
-        for term in query.split(whereSeparator: \.isWhitespace) {
-            var search = result.startIndex..<result.endIndex
-            while let range = result[search].range(of: String(term), options: [.caseInsensitive, .diacriticInsensitive]) {
-                result[range].backgroundColor = InkTheme.accent.opacity(0.18)
-                result[range].font = .subheadline.bold()
-                search = range.upperBound..<result.endIndex
-            }
+        for range in ranges {
+            guard let range = Range(range, in: value),
+                  let lower = AttributedString.Index(range.lowerBound, within: result),
+                  let upper = AttributedString.Index(range.upperBound, within: result) else { continue }
+            result[lower..<upper].backgroundColor = InkTheme.accent.opacity(0.18)
+            result[lower..<upper].font = .subheadline.bold()
         }
         return result
     }

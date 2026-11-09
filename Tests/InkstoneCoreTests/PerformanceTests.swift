@@ -116,3 +116,56 @@ struct PerformanceTests {
     }
 
 }
+
+extension PerformanceTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["INKSTONE_SEARCH_PRESENTATION_BENCHMARK"] == "1"))
+    func searchPresentationBaseline() async throws {
+        let clock = ContinuousClock()
+        let body = String(repeating: "普通中文 searchable paragraph. ", count: 80)
+        func legacySnippet(_ note: Note) -> String {
+            guard let range = note.text.range(of: "尾部target", options: [.caseInsensitive, .diacriticInsensitive]) else { return note.excerpt }
+            let start = note.text.index(range.lowerBound, offsetBy: -35, limitedBy: note.text.startIndex) ?? note.text.startIndex
+            return (start == note.text.startIndex ? "" : "…") + String(note.text[start...].prefix(150)).replacingOccurrences(of: "\n", with: " ")
+        }
+        for count in [1000, 10000] {
+            let notes = (0..<count).map { Note(path: "note-\($0).md", text: body + "尾部target") }
+            let start = clock.now
+            let matches = await NoteIndex.searchConcurrently(notes, query: "尾部target")
+            let searched = clock.now
+            var bytes = 0
+            for note in matches { bytes += legacySnippet(note).utf8.count; bytes += legacySnippet(note).utf8.count }
+            print("SEARCH_PRESENTATION baseline count=\(count) search=\(start.duration(to: searched)) render=\(searched.duration(to: clock.now)) bytes=\(bytes)")
+            #expect(matches.count == count)
+        }
+        let large = Note(path: "large.md", text: String(repeating: "a", count: 8 * 1024 * 1024 - 100) + "尾部target")
+        let start = clock.now
+        var bytes = 0
+        for _ in 0..<10 { bytes += legacySnippet(large).utf8.count; bytes += legacySnippet(large).utf8.count }
+        print("SEARCH_PRESENTATION baseline near8MiB_render10=\(start.duration(to: clock.now)) bytes=\(bytes)")
+    }
+}
+
+extension PerformanceTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["INKSTONE_SEARCH_PRESENTATION_BENCHMARK"] == "1"))
+    func searchPresentationOptimized() async throws {
+        let clock = ContinuousClock()
+        let body = String(repeating: "普通中文 searchable paragraph. ", count: 80)
+        for count in [1000, 10000] {
+            let notes = (0..<count).map { Note(path: "note-\($0).md", text: body + "尾部target") }
+            let start = clock.now
+            let matches = await NoteIndex.searchResultsConcurrently(notes, query: "尾部target")
+            let searched = clock.now
+            var bytes = 0
+            for result in matches { bytes += result.summary.utf8.count; bytes += result.summary.utf8.count }
+            print("SEARCH_PRESENTATION optimized count=\(count) searchAndSummary=\(start.duration(to: searched)) render=\(searched.duration(to: clock.now)) bytes=\(bytes)")
+            #expect(matches.count == count)
+        }
+        let large = Note(path: "large.md", text: String(repeating: "a", count: 8 * 1024 * 1024 - 100) + "尾部target")
+        let start = clock.now
+        let match = try #require(await NoteIndex.searchResultsConcurrently([large], query: "尾部target").first)
+        let searched = clock.now
+        var bytes = 0
+        for _ in 0..<10 { bytes += match.summary.utf8.count; bytes += match.summary.utf8.count }
+        print("SEARCH_PRESENTATION optimized near8MiB_searchAndSummary=\(start.duration(to: searched)) render10=\(searched.duration(to: clock.now)) bytes=\(bytes)")
+    }
+}

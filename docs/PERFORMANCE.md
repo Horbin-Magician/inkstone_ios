@@ -117,3 +117,19 @@ python3 scripts/test-webdav-interop.py
 83 项常规回归通过。新增测试覆盖 Unicode/百分号路径跨设备往返、路径字节上限和控制字符限制、损坏暂存重新校验、同步期间父目录被替换为符号链接、非目录父路径检查失败；既有文件呈现器保存、外部修改、取消、中断恢复和冲突保护回归继续通过。本地 HTTP WebDAV 与 Rust 桌面核心互通通过。完整哈希、发布前全库复核和条件发布均保留。
 
 复现命令仍为 `INKSTONE_SYNC_BENCHMARK=1 swift test --filter PerformanceTests.syncStages`。本轮前后原始日志位于本机 `.build/performance/sync-paths-2026-11-08/`。真实文件提供商的 POSIX 路径访问、下载等待和网络吞吐仍需真机验收；本轮没有改动网络并发策略或附件上传方式。
+
+## 第三阶段：后台搜索摘要（2026-11-09）
+
+用户已明确调整顺序：暂不发布正确性版本，继续第三阶段。正确性版本的独立提交和未签名归档保留。
+
+同一台 Mac、Xcode 工具链、Swift Release、相同数据集的首轮组件基准如下。原始日志在 `.build/performance/stage3/search-before.log` 和 `search-after.log`。查询为“尾部target”；每篇正文包含重复中文／英文段落，命中在末尾。基线模拟旧列表对每项两次调用摘要函数；优化后由后台搜索生成摘要及 UTF-16 高亮范围，展示只读取结果。
+
+| 数据集 | 原搜索 | 原摘要生成（每结果两次） | 新后台搜索＋摘要 | 新摘要读取（每结果两次） |
+| --- | ---: | ---: | ---: | ---: |
+| 1,000 篇 | 16.73 ms | 720.79 ms | 112.63 ms | 0.005 ms |
+| 10,000 篇 | 133.57 ms | 7,230.17 ms | 1,101.02 ms | 0.030 ms |
+| 接近 8 MiB 单篇 | 未单独测量 | 重复展示 10 次：25,632.50 ms | 首次搜索＋摘要：1,464.61 ms | 重复展示 10 次：0.002 ms |
+
+这些数据证明正文摘要扫描移出了列表渲染路径，不代表真实列表一次会渲染万行，也不代表已测得真机输入延迟或帧率。优化后的首次结果必须等待后台摘要准备完成；大笔记仍有约 1.46 秒后台扫描开销。搜索筛选继续使用 Foundation 的中文、子串、大小写与重音匹配语义；旧的只返回笔记 API 不生成正文摘要。
+
+复现：`INKSTONE_SEARCH_PRESENTATION_BENCHMARK=1 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test -c release --filter searchPresentationOptimized`。基线在改动前运行 `searchPresentationBaseline`。`time -l` 日志包含编译／测试进程，不能作为应用自身内存峰值；真机内存、输入、大图、多附件和磁盘指标仍待后续测量。
