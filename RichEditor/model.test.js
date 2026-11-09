@@ -84,3 +84,25 @@ test('serialization caches immutable blocks and keeps separators correct after r
     assert.equal(saveMarkdown(loaded.doc, loaded), loaded.source);
   } finally { serializer.serialize = serialize; }
 });
+
+for (const container of [
+  '> quoted\n>\n> [ref]: https://example.com "nested title"\n',
+  '- first\n\n  [ref]: https://example.com\n',
+  '1. first\n   > nested\n   >\n   > [ref]: https://example.com\n',
+]) test('nested definitions stay in a source atom after another block changes: ' + container, () => {
+  const source = container + '\nuntouched [link][ref]\n\neditable\n';
+  const loaded = loadMarkdown(source);
+  assert.equal(loaded.doc.firstChild.type.name, 'raw_block');
+  assert.ok(loaded.doc.firstChild.attrs.source.startsWith(container));
+  let state = EditorState.create({doc: loaded.doc});
+  let pos;
+  state.doc.descendants((node, at) => { if (node.isText && node.text === 'editable') pos = at; });
+  state = state.apply(state.tr.insertText('new ', pos));
+  const saved = saveMarkdown(state.doc, loaded);
+  assert.ok(saved.startsWith(container));
+  const reopened = loadMarkdown(saved);
+  let href;
+  reopened.doc.descendants(node => { if (node.isText && node.text === 'link') href = node.marks.find(mark => mark.type.name === 'link')?.attrs.href; });
+  assert.equal(href, 'https://example.com');
+  assert.equal(saveMarkdown(reopened.doc, reopened), saved);
+});

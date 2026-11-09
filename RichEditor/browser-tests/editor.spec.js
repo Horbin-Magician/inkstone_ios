@@ -131,3 +131,17 @@ test('batched edits flush immediately and cannot leak into another document', as
   expect(await markdown(page)).toBe('新文档');
   expect(await page.evaluate(() => changes.at(-1).session)).toBe('new-session');
 });
+
+test('nested reference definitions survive editing and reopening', async ({page}) => {
+  const container = '> quoted\n>\n> [ref]: https://example.com\n';
+  await load(page, container + '\n[link][ref]\n\neditable\n');
+  await expect(page.locator('.raw-block')).toContainText('[ref]: https://example.com');
+  await expect(page.locator('.raw-block')).toHaveAttribute('contenteditable', 'false');
+  await page.locator('.ProseMirror p').last().click();
+  await page.keyboard.press('End');
+  await page.keyboard.insertText(' changed');
+  const saved = await markdown(page);
+  expect(saved).toContain(container);
+  await page.evaluate(source => inkstone.load(source, 'reopened'), saved);
+  await expect(page.locator('.ProseMirror a')).toHaveAttribute('href', 'https://example.com');
+});

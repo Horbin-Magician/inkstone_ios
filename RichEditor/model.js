@@ -137,7 +137,18 @@ export function loadMarkdown(source) {
       } else if (gap) prefix = gap;
       const original = lines.slice(start, end).join('');
       const newline = original.match(/(?:\r\n|\r|\n)$/)?.[0] || '';
-      add(parsed.child(index), original, newline);
+      let node = parsed.child(index);
+      if (['blockquote', 'bullet_list', 'ordered_list'].includes(node.type.name)) {
+        // Reference definitions are consumed by Markdown-it without producing nodes.
+        // Serializing an edited container would silently discard them. Keep the
+        // complete container as an immutable source atom until lossless editing exists.
+        const environment = {};
+        tokenizer.parse(original, environment);
+        if (Object.keys(environment.references || {}).length) {
+          node = raw(original, '含引用定义的结构 · 可在源码模式编辑');
+        }
+      }
+      add(node, original, newline);
       cursor = end;
     });
     const rest = lines.slice(cursor).join('');
