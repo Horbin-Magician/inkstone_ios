@@ -46,12 +46,14 @@ struct SettingsView: View {
                     get: { store.automaticSync },
                     set: { store.setAutomaticSync($0) }
                 ))
-                Button("保存配置") {
-                    do { try store.saveSyncSettings(); store.syncStatus = "配置已保存" }
-                    catch { store.error = error.localizedDescription }
-                }
                 Button("测试连接") { Task { await store.sync(testOnly: true) } }
-            } header: { Text("WebDAV 连接配置") }
+            } header: { Text("WebDAV 连接配置") } footer: {
+                if let error = store.syncSettingsSaveError {
+                    Text(error).foregroundStyle(.red)
+                } else {
+                    Text("配置更改后自动保存，密码保存在此设备钥匙串中。")
+                }
+            }
             .disabled(store.syncing || store.loading)
             Section {
                 Text(store.syncSummary)
