@@ -64,6 +64,24 @@ actor MemoryRemote: SyncRemote {
     func corruptDownloads() { corrupt = true }
     func loseManifest() { revision = nil; value = SyncManifest() }
 }
+/// Model an editor whose latest content has not reached disk yet.
+private final class UnsavedFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+    let presentedItemURL: URL?
+    let presentedItemOperationQueue = OperationQueue()
+    private let content: Data
+    init(url: URL, content: Data) {
+        presentedItemURL = url; self.content = content
+        super.init()
+        presentedItemOperationQueue.maxConcurrentOperationCount = 1
+    }
+    func savePresentedItemChanges(completionHandler: @escaping (Error?) -> Void) {
+        do {
+            try content.write(to: presentedItemURL!, options: .atomic)
+            completionHandler(nil)
+        } catch { completionHandler(error) }
+    }
+}
+
 final class SyncTests {
     let base: URL
     let root: URL
@@ -167,7 +185,12 @@ final class SyncTests {
         let revision = await remote.revision
         let preparations = await remote.prepareCount
         let uploads = await remote.uploadCount
+        let baseline = recovery.appendingPathComponent(".sync/" + digest(Data(remote.identity.utf8)) + "/baseline.json")
+        let timestamp = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: baseline.path)
         let report = try await vault.synchronize(remote: remote)
+        let attributes = try FileManager.default.attributesOfItem(atPath: baseline.path)
+        #expect(attributes[.modificationDate] as? Date == timestamp)
         #expect(report.uploaded == 0 && report.downloaded == 0)
         #expect(!report.changed)
         #expect(await remote.revision == revision)
@@ -216,6 +239,129 @@ final class SyncTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: objects.path) == [digest(Data("new 0".utf8))])
         #expect(try String(contentsOf: file, encoding: .utf8) == "new 0")
     }
+    @Test func batchedReadsAskFilePresentersToSaveBeforeHashing() async throws {
+        let remote = MemoryRemote()
+        _ = try await vault.create(path: "note.md", text: "on disk")
+        let current = Data("unsaved editor content".utf8)
+        let presenter = UnsavedFilePresenter(url: root.appendingPathComponent("note.md"), content: current)
+        NSFileCoordinator.addFilePresenter(presenter)
+        defer { NSFileCoordinator.removeFilePresenter(presenter) }
+        _ = try await vault.synchronize(remote: remote)
+        let hash = digest(current)
+        #expect(await remote.value.files["note.md"] == hash)
+        #expect(await remote.objects[hash] == current)
+    }
+
+    @Test func externalEditDuringTransferAbortsBeforePublishEvenWithSameTimestamp() async throws {
+        let remote = MemoryRemote()
+        _ = try await vault.create(path: "local.md", text: "before")
+        let file = root.appendingPathComponent("local.md")
+        let date = try FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate] as! Date
+        await remote.set(["remote.md": Data("remote".utf8)])
+        let revision = await remote.revision
+        await remote.pause()
+        let task = Task { try await vault.synchronize(remote: remote) }
+        await remote.waitUntilPaused()
+        try Data("edited".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: file.path)
+        await remote.resume()
+        do { _ = try await task.value; Issue.record("Expected prepublication conflict") }
+        catch VaultError.conflict {}
+        #expect(await remote.revision == revision)
+        #expect(try String(contentsOf: file, encoding: .utf8) == "edited")
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("remote.md").path))
+        #expect(await remote.activeTransfers == 0)
+        // Retry must release the failed batch and stage the new content.
+        _ = try await vault.synchronize(remote: remote)
+        #expect(await remote.value.files["local.md"] == digest(Data("edited".utf8)))
+    }
+    @Test func cancellationBeforePublishLeavesLocalFilesAndRemoteManifestUntouched() async throws {
+        let remote = MemoryRemote()
+        _ = try await vault.create(path: "local.md", text: "safe")
+        await remote.set(["remote.md": Data("remote".utf8)])
+        let revision = await remote.revision
+        await remote.pause()
+        let task = Task { try await vault.synchronize(remote: remote) }
+        await remote.waitUntilPaused()
+        task.cancel()
+        await remote.resume()
+        do { _ = try await task.value; Issue.record("Expected cancellation") }
+        catch is CancellationError {}
+        #expect(await remote.revision == revision)
+        #expect(await remote.activeTransfers == 0)
+        #expect(try await vault.scan().notes.map(\.path) == ["local.md"])
+        _ = try await vault.synchronize(remote: remote)
+        #expect(try await vault.scan().notes.count == 2)
+    }
+    @Test func batchedScanRejectsSymlinksAndOversizedFilesAndReleasesOnFailure() async throws {
+        let remote = MemoryRemote()
+        let outside = base.appendingPathComponent("outside.md")
+        try Data("outside".utf8).write(to: outside)
+        let link = root.appendingPathComponent("link.md")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        await #expect(throws: VaultError.self) { _ = try await self.vault.synchronize(remote: remote) }
+        #expect(await remote.revision == nil)
+        try FileManager.default.removeItem(at: link)
+        let large = root.appendingPathComponent("large.bin")
+        #expect(FileManager.default.createFile(atPath: large.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: large)
+        try handle.truncate(atOffset: 129 * 1024 * 1024)
+        try handle.close()
+        await #expect(throws: SyncFailure.self) { _ = try await self.vault.synchronize(remote: remote) }
+        #expect(await remote.revision == nil)
+        try FileManager.default.removeItem(at: large)
+        _ = try await vault.create(path: "safe.md", text: "safe")
+        _ = try await vault.synchronize(remote: remote)
+        #expect(await remote.value.files == ["safe.md": digest(Data("safe".utf8))])
+        #expect(try String(contentsOf: outside, encoding: .utf8) == "outside")
+    }
+
+    @Test func pathValidationKeepsUnicodeAndByteLimits() throws {
+        let valid = ["资料 %2E%2E/笔记😀.md", "cafe\u{301}/百分号%25.md", "COM１.md", "a..b.md",
+                     String(repeating: "a", count: 255), String(repeating: "a/", count: 2047) + "bb"]
+        for path in valid { try SyncManifest.validatePath(path) }
+        let invalid = ["/a", "a//b", "a/", ".hidden/a", "a/..", "cOn.txt", "com0.md", "lpt9.md",
+                       "a ", "a.", "a\u{7f}.md", "a\u{85}.md", "a?.md", "a|b.md", "joined👩‍💻.md",
+                       String(repeating: "中", count: 86), String(repeating: "a", count: 256),
+                       String(repeating: "a/", count: 2047) + "bbb"]
+        for path in invalid { #expect(throws: VaultError.self) { try SyncManifest.validatePath(path) } }
+    }
+    @Test func unicodeAndPercentPathsRoundTripAndCorruptStagingIsRevalidated() async throws {
+        let path = "资料 %2E%2E/cafe\u{301}😀%25.md"
+        let content = Data("正文保持原样".utf8)
+        _ = try await vault.create(path: path, text: String(decoding: content, as: UTF8.self))
+        let rejecting = MemoryRemote()
+        await rejecting.reject()
+        await #expect(throws: SyncFailure.self) { _ = try await self.vault.synchronize(remote: rejecting) }
+        let staged = recovery.appendingPathComponent(".sync/" + digest(Data(rejecting.identity.utf8)) + "/objects/" + digest(content))
+        try Data("corrupted cache".utf8).write(to: staged)
+        let remote = MemoryRemote()
+        let report = try await vault.synchronize(remote: remote)
+        #expect(report.uploaded == 1)
+        #expect(await remote.value.files == [path: digest(content)])
+        #expect(await remote.objects[digest(content)] == content)
+        let receiver = try Vault(root: base.appendingPathComponent("receiver"), recovery: base.appendingPathComponent("receiver-state"))
+        let received = try await receiver.synchronize(remote: remote)
+        #expect(received.downloaded == 1 && received.uploaded == 0)
+        #expect(try Data(contentsOf: base.appendingPathComponent("receiver").appendingPathComponent(path)) == content)
+    }
+    @Test func replacingParentWithSymlinkDuringSyncCannotBypassPathChecks() async throws {
+        _ = try await vault.create(path: "folder/note.md", text: "safe")
+        let remote = MemoryRemote()
+        await remote.pause()
+        let task = Task { try await vault.synchronize(remote: remote) }
+        await remote.waitUntilPaused()
+        let folder = root.appendingPathComponent("folder")
+        let outside = base.appendingPathComponent("moved-folder")
+        try FileManager.default.moveItem(at: folder, to: outside)
+        try FileManager.default.createSymbolicLink(at: folder, withDestinationURL: outside)
+        await remote.resume()
+        do { _ = try await task.value; Issue.record("Expected symlink rejection") }
+        catch VaultError.invalidPath {}
+        #expect(await remote.revision == nil)
+        #expect(try String(contentsOf: outside.appendingPathComponent("note.md"), encoding: .utf8) == "safe")
+    }
+
     @Test func protocolValidation() throws {
         for path in ["a//b", "../x", "a/", "CON.md", "a\\b", "a:1", "a/hidden.", "LPT1.txt"] {
             #expect(throws: VaultError.self) { try SyncManifest.validatePath(path) }

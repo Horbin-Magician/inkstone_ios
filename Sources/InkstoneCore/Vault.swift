@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum VaultError: LocalizedError {
     case invalidPath, conflict, exists, tooLarge, attachmentTooLarge, backupTooLarge, invalidUTF8, busy, editorOpen
@@ -75,13 +76,27 @@ public actor Vault {
               !path.split(separator: "/").contains(where: { $0 == ".." || $0.hasPrefix(".") }) else { throw VaultError.invalidPath }
         // Resolve each existing component: Foundation does not consistently resolve
         // intermediate symlinks when the final file has not been created yet.
-        var result = root
+        let rootPath = root.path
+        var candidate = rootPath
         for component in path.split(separator: "/") {
-            result.appendPathComponent(String(component))
-            if let attributes = try? fm.attributesOfItem(atPath: result.path),
-               attributes[.type] as? FileAttributeType == .typeSymbolicLink { throw VaultError.invalidPath }
+            candidate += "/" + component
+            // Only file type is needed. lstat avoids allocating Foundation's full
+            // attributes dictionary and never follows the final component's link.
+            var attributes = stat()
+            let (status, code) = candidate.withCString { pointer in
+                let status = lstat(pointer, &attributes)
+                return (status, errno)
+            }
+            if status == 0 {
+                if attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) { throw VaultError.invalidPath }
+            } else {
+                // New files and parent directories may not exist yet. All other
+                // inspection errors fail closed rather than skipping the check.
+                if code != ENOENT { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
+            }
         }
-        guard result.standardizedFileURL.path.hasPrefix(root.path + "/") else { throw VaultError.invalidPath }
+        let result = URL(fileURLWithPath: candidate)
+        guard result.standardizedFileURL.path.hasPrefix(rootPath + "/") else { throw VaultError.invalidPath }
         return result
     }
     private func read(_ url: URL) throws -> String {
@@ -92,8 +107,8 @@ public actor Vault {
         guard let text = String(data: data, encoding: .utf8) else { throw VaultError.invalidUTF8 }
         return text
     }
-    func coordinated<T>(_ url: URL, writing: Bool, _ operation: (URL) throws -> T) throws -> T {
-        let coordinator = NSFileCoordinator()
+    func coordinated<T>(_ url: URL, writing: Bool, coordinator: NSFileCoordinator? = nil, _ operation: (URL) throws -> T) throws -> T {
+        let coordinator = coordinator ?? NSFileCoordinator()
         var error: NSError?
         var result: Result<T, Error>?
         if writing {
@@ -108,6 +123,8 @@ public actor Vault {
     public func scan() throws -> VaultSnapshot {
         var notes: [Note] = [], warnings: [String] = [], folders: [String] = []
         var nextCache: [String: Note] = [:]
+        var changedNotes: [Note] = []
+        var addedPath = false
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey], options: [.skipsHiddenFiles], errorHandler: { url, error in
             warnings.append("\(url.lastPathComponent)：\(error.localizedDescription)"); return true
         }) else { throw CocoaError(.fileReadUnknown) }
@@ -126,21 +143,41 @@ public actor Vault {
                 // Read external content on every scan, but reuse derived data for
                 // unchanged notes, including edits that preserve timestamps.
                 let note: Note
-                if let cached = noteCache[path], cached.modified == modified, cached.text == text { note = cached }
-                else { note = Note(path: path, text: text, modified: modified) }
+                if let cached = noteCache[path], cached.text == text {
+                    note = cached.modified == modified ? cached : cached.withModified(modified)
+                    if cached.modified != modified { changedNotes.append(note) }
+                } else {
+                    note = Note(path: path, text: text, modified: modified)
+                    changedNotes.append(note)
+                    if noteCache[path] == nil { addedPath = true }
+                }
                 nextCache[path] = note
                 notes.append(note)
             } catch { warnings.append("\(file.lastPathComponent)：\(error.localizedDescription)") }
         }
-        notes.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
-        if nextCache != noteCache { cachedIndex = NoteIndex(notes: notes) }
+        if changedNotes.isEmpty && nextCache.count == noteCache.count {
+            notes = cachedNotes
+        } else {
+            notes.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+        }
+        // Path changes can affect every link's resolution. For sparse content
+        // edits, update only changed sources; rebuild for broad changes to avoid
+        // repeatedly sorting shared backlink lists.
+        if addedPath || nextCache.count != noteCache.count || changedNotes.count > max(1, notes.count / 10) {
+            cachedIndex = NoteIndex(notes: notes)
+        } else {
+            for note in changedNotes { cachedIndex.replaceExisting(note) }
+        }
         noteCache = nextCache; cachedNotes = notes
         cachedFolders = folders.sorted(); cachedWarnings = warnings
-        return VaultSnapshot(notes: notes, warnings: warnings, folders: folders.sorted(), index: cachedIndex)
+        return VaultSnapshot(notes: notes, warnings: warnings, folders: cachedFolders, index: cachedIndex)
     }
     /// Update the known library after our own write, without reading unrelated files.
     /// Explicit refresh / foreground scans still detect external edits, even unchanged timestamps.
     public func snapshotAfterSaving(_ note: Note) -> VaultSnapshot {
+        if noteCache[note.path] == note {
+            return VaultSnapshot(notes: cachedNotes, warnings: cachedWarnings, folders: cachedFolders, index: cachedIndex)
+        }
         noteCache[note.path] = note
         var parent = note.folder
         while !parent.isEmpty {

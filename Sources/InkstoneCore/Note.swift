@@ -17,6 +17,17 @@ public struct Note: Identifiable, Hashable, Sendable {
         metadata = MarkdownMetadata(document: document)
         excerpt = String(document.previewText.prefix(150))
     }
+    /// A provider may touch a file without changing its Markdown.
+    /// Keep all content-derived values instead of parsing the document again.
+    func withModified(_ modified: Date) -> Note {
+        Note(path: path, text: text, modified: modified, title: title, folder: folder,
+             metadata: metadata, excerpt: excerpt)
+    }
+    private init(path: String, text: String, modified: Date, title: String, folder: String,
+                 metadata: MarkdownMetadata, excerpt: String) {
+        self.path = path; self.text = text; self.modified = modified
+        self.title = title; self.folder = folder; self.metadata = metadata; self.excerpt = excerpt
+    }
 }
 
 public struct WikiLink: Hashable, Sendable {

@@ -116,7 +116,7 @@ struct EditorView: View {
                     if !sourceEditing {
                         RichMarkdownEditor(text: $text, focused: $editorFocused, composing: $composing,
                             documentID: richDocumentID, fontSize: readingSize * readingScale, lineSpacing: readingSpacing,
-                            titles: store.notes.map { "/" + ($0.path as NSString).deletingPathExtension }, bridge: richEditor,
+                            titles: store.linkTitles, bridge: richEditor,
                             loadAttachment: { [vault = store.vault, path = current.path] source in
                                 guard let vault else { throw VaultError.invalidPath }
                                 return try await vault.attachment(source, from: path)
@@ -126,7 +126,7 @@ struct EditorView: View {
                             }, onError: { issue = $0 })
                     } else {
                     #if os(iOS)
-                    MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: $composing, titles: store.notes.map { "/" + ($0.path as NSString).deletingPathExtension }, pasteImage: { data in
+                    MarkdownTextEditor(text: $text, focused: Binding(get: { editorFocused }, set: { editorFocused = $0 }), composing: $composing, titles: store.linkTitles, pasteImage: { data in
                         attachmentWorking = true; defer { attachmentWorking = false }
                         return await insertImage(data, extension: "png")
                     })

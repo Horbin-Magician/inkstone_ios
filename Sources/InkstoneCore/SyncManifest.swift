@@ -36,13 +36,14 @@ struct SyncManifest: Codable, Equatable {
         try result.validate()
         return result
     }
+    private static let forbiddenPathCharacters = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "\\:<>\"|?*"))
     static func validatePath(_ path: String) throws {
         guard !path.isEmpty, path.utf8.count <= 4096 else { throw VaultError.invalidPath }
         for part in path.components(separatedBy: "/") {
             let stem = part.components(separatedBy: ".")[0].uppercased()
             guard !part.isEmpty, part.utf8.count <= 255, !part.hasPrefix("."),
                   !part.hasSuffix(" "), !part.hasSuffix("."),
-                  !part.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) || "\\:<>\"|?*".unicodeScalars.contains($0) }),
+                  !part.unicodeScalars.contains(where: { forbiddenPathCharacters.contains($0) }),
                   !["CON", "PRN", "AUX", "NUL"].contains(stem),
                   !(stem.count == 4 && (stem.hasPrefix("COM") || stem.hasPrefix("LPT")) && stem.last!.isASCII && stem.last!.isNumber) else { throw VaultError.invalidPath }
         }

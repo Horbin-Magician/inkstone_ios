@@ -162,6 +162,47 @@ final class VaultTests {
         try FileManager.default.removeItem(at: file)
         #expect(try await vault.scan().notes.isEmpty)
     }
+    @Test func refreshUpdatesSparseLinksAndTimestampOnlyOrdering() async throws {
+        _ = try await vault.create(path: "target.md", text: "# Target")
+        _ = try await vault.create(path: "other.md", text: "# Other")
+        _ = try await vault.create(path: "a.md", text: "[[target]]")
+        _ = try await vault.create(path: "b.md", text: "[[target]]")
+        for i in 0..<20 { _ = try await vault.create(path: "filler-\(i).md", text: "unchanged") }
+        let before = try await vault.scan()
+        let file = root.appendingPathComponent("a.md")
+        let later = Date(timeIntervalSince1970: 4_000_000_000)
+        try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
+        let touched = try await vault.scan()
+        #expect(touched.notes.first?.path == "a.md")
+        #expect(touched.notes.first?.modified == later)
+        #expect(touched.notes.first?.metadata == before.notes.first { $0.path == "a.md" }?.metadata)
+        #expect(touched.index.backlinks(to: "target.md").first?.modified == later)
+        try Data("[[other]]".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: file.path)
+        let edited = try await vault.scan()
+        #expect(edited.index.backlinks(to: "target.md").map(\.path) == ["b.md"])
+        #expect(edited.index.backlinks(to: "other.md").map(\.path) == ["a.md"])
+        #expect(touched.index.backlinks(to: "target.md").count == 2)
+        let unchanged = try await vault.scan()
+        #expect(unchanged.notes == edited.notes)
+        let saved = await vault.snapshotAfterSaving(try #require(edited.notes.first))
+        #expect(saved.notes == edited.notes)
+        #expect(saved.index.backlinks(to: "other.md") == edited.index.backlinks(to: "other.md"))
+    }
+
+    @Test func pathInspectionFailsWhenAParentIsNotADirectory() async throws {
+        _ = try await vault.create(path: "parent.md", text: "keep")
+        do {
+            _ = try await vault.fileURL("parent.md/child/grandchild.md")
+            Issue.record("Expected parent inspection failure")
+        } catch {
+            let failure = error as NSError
+            #expect(failure.domain == NSPOSIXErrorDomain)
+            #expect(failure.code == Int(POSIXErrorCode.ENOTDIR.rawValue))
+        }
+        #expect(try String(contentsOf: root.appendingPathComponent("parent.md"), encoding: .utf8) == "keep")
+    }
+
     @Test func testMissingExternalVaultIsNotRecreated() throws {
         let missing = base.appendingPathComponent("removed-external")
         do {

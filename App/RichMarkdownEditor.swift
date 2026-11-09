@@ -84,6 +84,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var lastID: UUID?
         var revision = -1
         var lastFocus: Bool?
+        var lastEnabled: Bool?
         var appearance: [Double] = []
         var lastTitles: [String] = []
         init(_ parent: RichMarkdownEditor) {
@@ -99,13 +100,15 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         func synchronize() {
             guard ready else { return }
             if lastID != parent.documentID {
-                lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil
+                lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil; lastEnabled = nil
                 call("load", [parent.text, parent.documentID.uuidString])
             } else if lastSource != parent.text {
-                lastSource = parent.text
+                lastSource = parent.text; lastEnabled = nil
                 call("setSource", [parent.text, parent.documentID.uuidString])
             }
-            call("setEnabled", [enabled])
+            if lastEnabled != enabled {
+                lastEnabled = enabled; call("setEnabled", [enabled])
+            }
             if appearance != [parent.fontSize, parent.lineSpacing] {
                 appearance = [parent.fontSize, parent.lineSpacing]; call("setAppearance", appearance)
             }

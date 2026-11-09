@@ -26,6 +26,8 @@ final class LibraryStore: ObservableObject {
     @Published var notes: [Note] = []
     private(set) var noteIndex = NoteIndex(notes: [])
     private(set) var notesRevision = 0
+    private(set) var linkTitles: [String] = []
+    private var linkPaths: Set<String> = []
     @Published var warnings: [String] = []
     @Published var error: String?
     @Published var vaultName = "我的墨砚"
@@ -143,6 +145,11 @@ final class LibraryStore: ObservableObject {
     private func apply(_ snapshot: VaultSnapshot) {
         noteIndex = snapshot.index
         if notes != snapshot.notes {
+            let paths = Set(snapshot.notes.map(\.path))
+            if paths != linkPaths {
+                linkPaths = paths
+                linkTitles = paths.sorted().map { "/" + ($0 as NSString).deletingPathExtension }
+            }
             notesRevision &+= 1
             notes = snapshot.notes
             if !syncing { pendingSync = true; autoSyncSchedule.requestChange() }
