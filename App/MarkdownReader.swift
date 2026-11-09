@@ -134,21 +134,27 @@ private struct MarkdownBlockView: View {
             }.padding(MarkdownAppearance.metric("code-padding")).background(InkTheme.background, in: RoundedRectangle(cornerRadius: MarkdownAppearance.metric("code-radius")))
         case .table:
             ScrollView(.horizontal) {
-                Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
+                MarkdownTableLayout(columnCount: block.children.map { $0.children.count }.max() ?? 0,
+                                    fontScale: bodySize / 17) {
                     ForEach(Array(block.children.enumerated()), id: \.element.id) { index, row in
-                        GridRow {
-                            ForEach(row.children) { cell in
-                                MarkdownInlineView(nodes: cell.inline)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .fontWeight(index == 0 ? .semibold : .regular)
-                                    .frame(minWidth: 90, maxWidth: 280, alignment: cellAlignment(cell))
-                                    .padding(10)
-                                    .background(index == 0 ? InkTheme.accent.opacity(0.12) : Color.secondary.opacity(index.isMultiple(of: 2) ? 0.06 : 0.02))
-                                    .overlay { Rectangle().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5) }
-                            }
+                        ForEach(row.children) { cell in
+                            MarkdownInlineView(nodes: cell.inline)
+                                .fontWeight(index == 0 ? .semibold : .regular)
+                                .multilineTextAlignment(cellTextAlignment(cell))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                                       alignment: cellAlignment(cell))
+                                .background(index == 0 ? InkTheme.accent.opacity(0.12) : Color.secondary.opacity(index.isMultiple(of: 2) ? 0.06 : 0.02))
+                                .overlay { Rectangle().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5) }
+                        }
+                        // Keep column positions stable for incomplete rows.
+                        ForEach(row.children.count..<(block.children.map { $0.children.count }.max() ?? 0), id: \.self) { _ in
+                            Color.clear
                         }
                     }
                 }
+                .padding(.bottom, 4)
             }
         case .divider: Divider().padding(.vertical, 6)
         case .html: Text(block.text).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary)
@@ -160,7 +166,65 @@ private struct MarkdownBlockView: View {
     }
     private func cellAlignment(_ cell: MarkdownBlock) -> Alignment {
         guard case .cell(let alignment) = cell.kind else { return .leading }
+        switch alignment { case "center": return .top; case "right": return .topTrailing; default: return .topLeading }
+    }
+    private func cellTextAlignment(_ cell: MarkdownBlock) -> TextAlignment {
+        guard case .cell(let alignment) = cell.kind else { return .leading }
         switch alignment { case "center": return .center; case "right": return .trailing; default: return .leading }
+    }
+}
+
+/// Measure wrapped content at its final column width before assigning row heights.
+/// Horizontal scrolling keeps long tables from compressing into the reader's viewport.
+private struct MarkdownTableLayout: Layout {
+    let columnCount: Int
+    let fontScale: CGFloat
+
+    private struct Metrics {
+        var widths: [CGFloat]
+        var heights: [CGFloat]
+        var size: CGSize {
+            CGSize(width: widths.reduce(0, +), height: heights.reduce(0, +))
+        }
+    }
+
+    private func metrics(for subviews: Subviews) -> Metrics {
+        guard columnCount > 0, !subviews.isEmpty else { return Metrics(widths: [], heights: []) }
+        let minimumWidth = 110 * fontScale
+        let maximumWidth = 300 * fontScale
+        var widths = Array(repeating: minimumWidth, count: columnCount)
+        for (index, cell) in subviews.enumerated() {
+            let idealWidth = cell.sizeThatFits(.unspecified).width
+            widths[index % columnCount] = max(widths[index % columnCount], min(maximumWidth, idealWidth))
+        }
+        var heights = Array(repeating: CGFloat.zero, count: (subviews.count + columnCount - 1) / columnCount)
+        for (index, cell) in subviews.enumerated() {
+            let proposal = ProposedViewSize(width: widths[index % columnCount], height: nil)
+            heights[index / columnCount] = max(heights[index / columnCount], cell.sizeThatFits(proposal).height)
+        }
+        return Metrics(widths: widths, heights: heights)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        metrics(for: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let metrics = metrics(for: subviews)
+        guard !metrics.widths.isEmpty else { return }
+        var x = bounds.minX
+        var y = bounds.minY
+        for (index, cell) in subviews.enumerated() {
+            let column = index % columnCount
+            let row = index / columnCount
+            cell.place(at: CGPoint(x: x, y: y), anchor: .topLeading,
+                       proposal: ProposedViewSize(width: metrics.widths[column], height: metrics.heights[row]))
+            x += metrics.widths[column]
+            if column == columnCount - 1 {
+                x = bounds.minX
+                y += metrics.heights[row]
+            }
+        }
     }
 }
 
