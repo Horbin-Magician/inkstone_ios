@@ -48,7 +48,7 @@ appConfig = configs('app', {
     'PRODUCT_BUNDLE_IDENTIFIER':'com.inkstone.mobile', 'PRODUCT_NAME':'Inkstone',
     'IPHONEOS_DEPLOYMENT_TARGET':'17.0', 'SWIFT_VERSION':'5.0', 'TARGETED_DEVICE_FAMILY':'1,2',
     'CODE_SIGN_ENTITLEMENTS':'App/Inkstone.entitlements', 'INFOPLIST_FILE':'App/Info.plist', 'SDKROOT':'iphoneos', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator',
-    'CODE_SIGN_STYLE':'Automatic', 'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'6',
+    'CODE_SIGN_STYLE':'Automatic', 'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'7',
     'ASSETCATALOG_COMPILER_APPICON_NAME':'AppIcon', 'ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME':'AccentColor',
     'GENERATE_INFOPLIST_FILE':'NO', 'SUPPORTS_MACCATALYST':'NO', 'ENABLE_PREVIEWS':'YES',
     'SWIFT_EMIT_LOC_STRINGS':'YES', 'LD_RUNPATH_SEARCH_PATHS':['$(inherited)', '@executable_path/Frameworks']})
@@ -63,7 +63,7 @@ shareConfig = configs('share', {
     'IPHONEOS_DEPLOYMENT_TARGET':'17.0', 'SWIFT_VERSION':'5.0', 'TARGETED_DEVICE_FAMILY':'1,2',
     'INFOPLIST_FILE':'ShareExtension/Info.plist', 'CODE_SIGN_ENTITLEMENTS':'ShareExtension/InkstoneShare.entitlements',
     'SDKROOT':'iphoneos', 'SUPPORTED_PLATFORMS':'iphoneos iphonesimulator', 'CODE_SIGN_STYLE':'Automatic',
-    'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'6', 'GENERATE_INFOPLIST_FILE':'NO',
+    'MARKETING_VERSION':'0.1.0', 'CURRENT_PROJECT_VERSION':'7', 'GENERATE_INFOPLIST_FILE':'NO',
     'APPLICATION_EXTENSION_API_ONLY':'YES', 'SKIP_INSTALL':'YES',
     'LD_RUNPATH_SEARCH_PATHS':['$(inherited)', '@executable_path/Frameworks', '@executable_path/../../Frameworks']})
 shareSources = obj('shareSources', 'PBXSourcesBuildPhase', buildActionMask=2147483647, files=[obj('shareSourceBuild', 'PBXBuildFile', fileRef=shareRef)], runOnlyForDeploymentPostprocessing=0)

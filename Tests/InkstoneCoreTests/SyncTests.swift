@@ -244,6 +244,17 @@ final class SyncTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: objects.path) == [digest(Data("new 0".utf8))])
         #expect(try String(contentsOf: file, encoding: .utf8) == "new 0")
     }
+    @Test func libraryScanAsksFilePresentersToSaveBeforeParsing() async throws {
+        _ = try await vault.create(path: "note.md", text: "on disk")
+        let current = Data("# Unsaved title".utf8)
+        let presenter = UnsavedFilePresenter(url: root.appendingPathComponent("note.md"), content: current)
+        NSFileCoordinator.addFilePresenter(presenter)
+        defer { NSFileCoordinator.removeFilePresenter(presenter) }
+        let snapshot = try await vault.scan()
+        #expect(snapshot.notes.first?.text == "# Unsaved title")
+        #expect(snapshot.notes.first?.metadata.headings.first?.title == "Unsaved title")
+    }
+
     @Test func batchedReadsAskFilePresentersToSaveBeforeHashing() async throws {
         let remote = MemoryRemote()
         _ = try await vault.create(path: "note.md", text: "on disk")

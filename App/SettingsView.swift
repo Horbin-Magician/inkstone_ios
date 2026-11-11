@@ -224,6 +224,7 @@ struct SyncStatusView: View {
                                 Text(path).font(.headline)
                                 ForEach(store.notes.filter { $0.path == path || $0.path.hasPrefix((path as NSString).deletingPathExtension + " (云端冲突 ") }) { note in
                                     Button(note.path == path ? "核对本机版本" : "核对云端冲突副本") { conflictNote = note }
+                                        .disabled(store.loading)
                                 }
                             }
                         }

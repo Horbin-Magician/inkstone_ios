@@ -40,8 +40,10 @@ public struct VaultSnapshot: Sendable {
 public actor Vault {
     public let root: URL
     let recovery: URL
+    private var startupCacheDirty = true
+    private let startupCacheURL: URL?
     let fm = FileManager.default
-    public init(root: URL, recovery: URL, createIfNeeded: Bool = true) throws {
+    public init(root: URL, recovery: URL, createIfNeeded: Bool = true, startupCache: URL? = nil) throws {
         if createIfNeeded {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         } else {
@@ -52,6 +54,7 @@ public actor Vault {
         }
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
         self.recovery = recovery.standardizedFileURL.resolvingSymlinksInPath()
+        self.startupCacheURL = startupCache
         try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
     }
     private var noteCache: [String: Note] = [:]
@@ -120,7 +123,61 @@ public actor Vault {
         guard let result else { throw CocoaError(.fileReadUnknown) }
         return try result.get()
     }
+    private struct StartupCache: Codable {
+        let version: Int
+        let root: String
+        let notes: [Note]
+        let folders: [String]
+    }
+    /// Presentation only: callers must reconcile with scan before opening cached notes.
+    /// Decode stored derived fields directly, without reparsing every Markdown body.
+    public func cachedSnapshot() -> VaultSnapshot? {
+        guard let startupCacheURL,
+              let size = try? startupCacheURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              size <= 64 * 1024 * 1024,
+              let data = try? Data(contentsOf: startupCacheURL),
+              let cache = try? PropertyListDecoder().decode(StartupCache.self, from: data),
+              cache.version == 1, cache.root == root.path,
+              Set(cache.notes.map(\.path)).count == cache.notes.count,
+              cache.notes.allSatisfy({ (try? SyncManifest.validatePath($0.path)) != nil && $0.path.lowercased().hasSuffix(".md") }) else { return nil }
+        startupCacheDirty = false
+        noteCache = Dictionary(uniqueKeysWithValues: cache.notes.map { ($0.path, $0) })
+        cachedNotes = cache.notes
+        cachedFolders = cache.folders
+        cachedWarnings = []
+        cachedIndex = NoteIndex(notes: cachedNotes)
+        return VaultSnapshot(notes: cachedNotes, warnings: [], folders: cachedFolders, index: cachedIndex)
+    }
+    private func persistStartupCache() {
+        guard startupCacheDirty, let startupCacheURL else { return }
+        // Bound this optional optimization; a large library still works without it.
+        guard cachedNotes.reduce(0, { $0 + $1.text.utf8.count }) <= 32 * 1024 * 1024 else {
+            try? fm.removeItem(at: startupCacheURL)
+            return
+        }
+        do {
+            let encoder = PropertyListEncoder()
+            encoder.outputFormat = .binary
+            let data = try encoder.encode(StartupCache(version: 1, root: root.path, notes: cachedNotes, folders: cachedFolders))
+            guard data.count <= 64 * 1024 * 1024 else { try? fm.removeItem(at: startupCacheURL); return }
+            try fm.createDirectory(at: startupCacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: startupCacheURL, options: .atomic)
+            startupCacheDirty = false
+        } catch {
+            // A cache must never prevent opening or saving the actual Markdown files.
+            try? fm.removeItem(at: startupCacheURL)
+        }
+    }
     public func scan() throws -> VaultSnapshot {
+        let previousNotes = cachedNotes, previousFolders = cachedFolders
+        let snapshot = try coordinatedReadBatch { coordinator in
+            try scan(coordinator: coordinator)
+        }
+        if previousNotes != snapshot.notes || previousFolders != snapshot.folders { startupCacheDirty = true }
+        persistStartupCache()
+        return snapshot
+    }
+    private func scan(coordinator: NSFileCoordinator) throws -> VaultSnapshot {
         var notes: [Note] = [], warnings: [String] = [], folders: [String] = []
         var nextCache: [String: Note] = [:]
         var changedNotes: [Note] = []
@@ -138,7 +195,7 @@ public actor Vault {
                 guard canonical.path.hasPrefix(root.path + "/") else { throw VaultError.invalidPath }
                 let path = String(canonical.path.dropFirst(root.path.count + 1))
                 let checked = try url(path)
-                let text = try coordinated(checked, writing: false) { try read($0) }
+                let text = try coordinated(checked, writing: false, coordinator: coordinator) { try read($0) }
                 let modified = values.contentModificationDate ?? .distantPast
                 // Read external content on every scan, but reuse derived data for
                 // unchanged notes, including edits that preserve timestamps.
@@ -178,6 +235,7 @@ public actor Vault {
         if noteCache[note.path] == note {
             return VaultSnapshot(notes: cachedNotes, warnings: cachedWarnings, folders: cachedFolders, index: cachedIndex)
         }
+        startupCacheDirty = true
         noteCache[note.path] = note
         var parent = note.folder
         while !parent.isEmpty {

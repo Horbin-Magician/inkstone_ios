@@ -34,7 +34,17 @@ final class LibraryStore: ObservableObject {
     @Published var warnings: [String] = []
     @Published var error: String?
     @Published var vaultName = "我的墨砚"
-    @Published var loading = false { didSet { rescheduleAutomaticSync() } }
+    private var pendingOpenPath: String?
+    @Published var loading = false {
+        didSet {
+            rescheduleAutomaticSync()
+            if !loading, let path = pendingOpenPath {
+                pendingOpenPath = nil
+                if let note = notes.first(where: { $0.path == path }) { openNote(note) }
+                else { error = "这篇笔记已被移动或删除，请从更新后的列表重新选择。" }
+            }
+        }
+    }
     @Published var favorites: Set<String> = []
     @Published var selected: Note? { didSet { rescheduleAutomaticSync() } }
     @Published var requestedNote: Note?
@@ -74,7 +84,7 @@ final class LibraryStore: ObservableObject {
         await openLocal()
     }
     func openLocal() async {
-        guard !syncing else { return }
+        guard !syncing, !loading else { return }
         do {
             try await open(localRoot, external: false)
             defaults.removeObject(forKey: "vaultBookmark")
@@ -89,15 +99,21 @@ final class LibraryStore: ObservableObject {
     }
     func open(_ url: URL, external: Bool) async throws {
         guard selected == nil else { throw VaultError.editorOpen }
-        guard !syncing else { throw VaultError.busy }
+        guard !syncing, !loading else { throw VaultError.busy }
         loading = true; defer { loading = false }
         let access = external && url.startAccessingSecurityScopedResource()
         do {
             let identity = external ? url.standardizedFileURL.resolvingSymlinksInPath().path : "local"
             let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
-            let next = try Vault(root: url, recovery: appSupport.appendingPathComponent("Recovery/" + key), createIfNeeded: !external)
-            try await next.migrateLegacyDrafts()
-            let snapshot = try await next.scan()
+            let next = try Vault(root: url, recovery: appSupport.appendingPathComponent("Recovery/" + key), createIfNeeded: !external,
+                                 startupCache: appSupport.appendingPathComponent("LibraryCache/" + key + ".plist"))
+            let cached = await next.cachedSnapshot()
+            let snapshot: VaultSnapshot
+            if let cached { snapshot = cached }
+            else {
+                try await next.migrateLegacyDrafts()
+                snapshot = try await next.scan()
+            }
             if external {
                 #if os(iOS)
                 let bookmark = try url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil)
@@ -126,6 +142,21 @@ final class LibraryStore: ObservableObject {
                 savedSyncSettings = webDAV; savedSyncPassword = webDAVPassword
             }
             catch { self.error = "无法读取钥匙串中的 WebDAV 密码：" + error.localizedDescription }
+            if cached != nil {
+                // Publish first. The vault actor performs all verification IO off the UI actor.
+                await Task.yield()
+                do {
+                    try await next.migrateLegacyDrafts()
+                    apply(try await next.scan())
+                    if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" }
+                } catch {
+                    pendingOpenPath = nil
+                    self.error = "笔记库更新失败，请刷新后重试：" + error.localizedDescription
+                    // Do not leave unverified content available for editing after failure.
+                    notes = []; folders = []; linkPaths = []; linkTitles = []
+                    noteIndex = NoteIndex(notes: []); notesRevision &+= 1
+                }
+            }
         } catch {
             if access { url.stopAccessingSecurityScopedResource() }
             throw error
@@ -264,6 +295,7 @@ final class LibraryStore: ObservableObject {
     }
     var browsableNotes: [Note] { notes }
     func openNote(_ note: Note) {
+        if loading { pendingOpenPath = note.path; return }
         if selected == nil { selected = note } else { requestedNote = note }
     }
     func beginNote() {
@@ -275,7 +307,7 @@ final class LibraryStore: ObservableObject {
     }
 
     func createFolder(_ name: String) async {
-        guard !syncing else { error = VaultError.busy.localizedDescription; return }
+        guard !syncing, !loading else { error = VaultError.busy.localizedDescription; return }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         do {
             try await vault?.createFolder(path: currentFolder.isEmpty ? name : currentFolder + "/" + name)
@@ -297,7 +329,7 @@ final class LibraryStore: ObservableObject {
     }
     func move(_ path: String, to destination: String) async {
         guard selected == nil else { error = VaultError.editorOpen.localizedDescription; return }
-        guard !syncing else { error = VaultError.busy.localizedDescription; return }
+        guard !syncing, !loading else { error = VaultError.busy.localizedDescription; return }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         do {
             try await vault?.move(path: path, to: destination)
@@ -309,7 +341,7 @@ final class LibraryStore: ObservableObject {
         } catch { self.error = error.localizedDescription }
     }
     func deleteNote(_ note: Note) async throws {
-        guard !syncing, let vault else { throw VaultError.busy }
+        guard !syncing, !loading, let vault else { throw VaultError.busy }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         try await vault.trash(path: note.path, expected: note.text)
         favorites.remove(note.path)
@@ -318,7 +350,7 @@ final class LibraryStore: ObservableObject {
     }
     func deleteFolder(_ path: String) async throws {
         guard selected == nil else { throw VaultError.editorOpen }
-        guard !syncing, let vault else { throw VaultError.busy }
+        guard !syncing, !loading, let vault else { throw VaultError.busy }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         try await vault.trashFolder(path: path)
         favorites = favorites.filter { !$0.hasPrefix(path + "/") }
@@ -337,7 +369,7 @@ final class LibraryStore: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func restore(_ record: RecoveryRecord) async -> Note? {
-        guard !syncing else { error = VaultError.busy.localizedDescription; return nil }
+        guard !syncing, !loading else { error = VaultError.busy.localizedDescription; return nil }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         do { let note = try await vault?.restoreCopy(record); await refresh(); return note }
         catch { self.error = error.localizedDescription; return nil }
@@ -361,21 +393,22 @@ final class LibraryStore: ObservableObject {
         let inbox = root.appendingPathComponent("Inbox")
         guard FileManager.default.fileExists(atPath: inbox.path) else { return }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
+        var imported = false
         do {
             for file in try FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil) where file.pathExtension == "json" {
                 guard UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil else { continue }
                 let value = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: file))
                 guard let text = value["text"] else { continue }
                 let path = "收件箱/分享-" + file.deletingPathExtension().lastPathComponent + ".md"
-                do { _ = try await vault.create(path: path, text: text) }
+                do { _ = try await vault.create(path: path, text: text); imported = true }
                 catch VaultError.exists {
                     let saved = try await vault.scan().notes.first { $0.path == path }
                     guard saved?.text == text else { throw VaultError.conflict }
                 }
                 try FileManager.default.removeItem(at: file)
             }
-            await refresh()
         } catch { self.error = "分享收件箱尚未导入，内容仍已保留：" + error.localizedDescription }
+        if imported { await refresh() }
         #endif
     }
 

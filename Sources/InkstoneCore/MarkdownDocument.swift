@@ -232,10 +232,17 @@ public struct MarkdownDocument: Sendable {
 private struct MathProtection {
     var source: String
     var formulas: [String: MarkdownInline] = [:]
-    private let prefix = "INKSTONEMATH" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    private var prefix = ""
+    private var tokenPattern: NSRegularExpression?
+    // Same delimiter rules as the editor: no whitespace inside a single-dollar
+    // boundary, no newlines in inline math, and no closing dollar before a digit.
+    static let delimiters = try! NSRegularExpression(pattern: #"\$\$([\s\S]+?)\$\$|(?<!\$)\$(?!\$)((?:\\[^\n]|[^$\n\\])+?)\$(?![\d$])"#)
     init(_ original: String) {
         source = original
-        guard original.contains("$") else { return }
+        guard original.utf8.contains(0x24) else { return }
+        let matches = Self.delimiters.matches(in: original, range: NSRange(original.startIndex..., in: original))
+        guard !matches.isEmpty else { return }
+        prefix = "INKSTONEMATH" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
         let lines = original.components(separatedBy: "\n")
         var offsets = [0]
         for line in lines.dropLast() { offsets.append(offsets.last! + line.utf8.count + 1) }
@@ -257,11 +264,9 @@ private struct MathProtection {
                 excluded.append(start..<(start + original[range].utf8.count))
             }
         }
-        // Same delimiter rules as the editor: no whitespace inside a single-dollar
-        // boundary, no newlines in inline math, and no closing dollar before a digit.
-        let regex = try! NSRegularExpression(pattern: #"\$\$([\s\S]+?)\$\$|(?<!\$)\$(?!\$)((?:\\[^\n]|[^$\n\\])+?)\$(?![\d$])"#)
-        let matches = regex.matches(in: original, range: NSRange(original.startIndex..., in: original))
-        for (index, match) in matches.enumerated().reversed() {
+        var rewritten = ""
+        var cursor = original.startIndex
+        for (index, match) in matches.enumerated() {
             guard let range = Range(match.range, in: original) else { continue }
             let start = original[..<range.lowerBound].utf8.count
             let end = start + original[range].utf8.count
@@ -274,8 +279,8 @@ private struct MathProtection {
             let token = prefix + String(index) + "END"
             var value = String(original[content])
             if !display && (value.first?.isWhitespace == true || value.last?.isWhitespace == true) { continue }
-            let linePrefix = original[..<range.lowerBound].split(separator: "\n", omittingEmptySubsequences: false).last ?? ""
-            if linePrefix.contains(">") {
+            let before = original[..<range.lowerBound]
+            if value.contains(">"), before.reversed().lazy.prefix(while: { $0 != "\n" }).contains(">") {
                 value = value.replacingOccurrences(of: #"(?m)^[ \t]*(?:>[ \t]*)+"#, with: "", options: .regularExpression)
             }
             formulas[token] = .math(value.trimmingCharacters(in: .whitespacesAndNewlines), display)
@@ -284,12 +289,18 @@ private struct MathProtection {
                 let prefix = line.prefix(while: { $0 == " " || $0 == "\t" || $0 == ">" })
                 return "\n" + prefix
             }.joined()
-            // Reversed replacement means the original UTF-16 offsets remain valid.
-            let replacementRange = Range(match.range, in: source)!
-            source.replaceSubrange(replacementRange, with: token + continuations)
+            rewritten += original[cursor..<range.lowerBound]
+            rewritten += token + continuations
+            cursor = range.upperBound
+        }
+        if !formulas.isEmpty {
+            rewritten += original[cursor...]
+            source = rewritten
+            tokenPattern = try! NSRegularExpression(pattern: prefix + #"[0-9]+END"#)
         }
     }
     func restore(_ block: MarkdownBlock) -> MarkdownBlock {
+        guard tokenPattern != nil else { return block }
         var result = block
         result.inline = block.inline.flatMap(restoreInline)
         result.children = block.children.map(restore)
@@ -298,8 +309,7 @@ private struct MathProtection {
     private func restoreInline(_ node: MarkdownInline) -> [MarkdownInline] {
         switch node {
         case .text(let text):
-            guard text.contains(prefix) else { return [node] }
-            let regex = try! NSRegularExpression(pattern: prefix + #"[0-9]+END"#)
+            guard let regex = tokenPattern, text.contains(prefix) else { return [node] }
             var result: [MarkdownInline] = [], cursor = text.startIndex
             for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
                 guard let range = Range(match.range, in: text), let formula = formulas[String(text[range])] else { continue }

@@ -190,7 +190,7 @@ export function loadMarkdown(source) {
       const original = lines.slice(start, end).join('');
       const newline = original.match(/(?:\r\n|\r|\n)$/)?.[0] || '';
       let node = parsed.child(index);
-      if (['blockquote', 'bullet_list', 'ordered_list'].includes(node.type.name)) {
+      if (original.includes(':') && ['blockquote', 'bullet_list', 'ordered_list'].includes(node.type.name)) {
         // Reference definitions are consumed by Markdown-it without producing nodes.
         // Serializing an edited container would silently discard them. Keep the
         // complete container as an immutable source atom until lossless editing exists.

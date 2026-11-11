@@ -40,7 +40,7 @@ extension Vault {
     }
     /// Batch preparation is not a read lock: every access inside must still use
     /// coordinated(..., coordinator:). Keep default read options so presenters save.
-    private func coordinatedReadBatch<T>(_ operation: (NSFileCoordinator) throws -> T) throws -> T {
+    func coordinatedReadBatch<T>(_ operation: (NSFileCoordinator) throws -> T) throws -> T {
         let coordinator = NSFileCoordinator()
         var error: NSError?
         var result: Result<T, Error>?
@@ -161,19 +161,20 @@ extension Vault {
         guard remoteManifest.version >= base.version, (remoteManifest.generation ?? 0) >= (base.generation ?? 0) else {
             throw SyncFailure("云端维护代次发生回退，已停止同步。")
         }
-        let (target, conflicts) = try SyncManifest.merge(base: base.files, local: local, remote: remoteManifest)
-        report.conflicts = conflicts
-        mark("validateAndMerge")
-        // A no-change sync still reads and hashes local content, but needs no
-        // staging, collection creation, or remote manifest publication.
-        if revision != nil, local == target.files && target == remoteManifest {
-            if !hasBaseline || base != target {
-                try JSONEncoder().encode(target).write(to: baseline, options: .atomic)
+        // The local scan already hashed every file. Identical sides always merge
+        // to the validated remote manifest, regardless of the previous baseline.
+        if revision != nil, local == remoteManifest.files {
+            mark("validateAndMerge")
+            if !hasBaseline || base != remoteManifest {
+                try JSONEncoder().encode(remoteManifest).write(to: baseline, options: .atomic)
             }
             try? fm.removeItem(at: objects)
             mark("finishUnchanged")
             return finish(report)
         }
+        let (target, conflicts) = try SyncManifest.merge(base: base.files, local: local, remote: remoteManifest)
+        report.conflicts = conflicts
+        mark("validateAndMerge")
         report.changed = true
         let pathPlan = SyncPathPlan(before: local, target: target.files)
         try preflight(pathPlan)

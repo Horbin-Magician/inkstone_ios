@@ -1,6 +1,6 @@
 import Foundation
 
-public struct Note: Identifiable, Hashable, Sendable {
+public struct Note: Identifiable, Hashable, Codable, Sendable {
     public var id: String { path }
     public let path: String
     public let text: String
@@ -65,17 +65,17 @@ public struct NoteSearchResult: Sendable {
     }
 }
 
-public struct WikiLink: Hashable, Sendable {
+public struct WikiLink: Hashable, Codable, Sendable {
     public let target: String
     public let label: String
 }
-public struct Heading: Identifiable, Hashable, Sendable {
+public struct Heading: Identifiable, Hashable, Codable, Sendable {
     public var id: Int { line }
     public let line: Int
     public let level: Int
     public let title: String
 }
-public struct MarkdownMetadata: Hashable, Sendable {
+public struct MarkdownMetadata: Hashable, Codable, Sendable {
     public let links: [WikiLink]
     public let headings: [Heading]
     public init(_ source: String) {

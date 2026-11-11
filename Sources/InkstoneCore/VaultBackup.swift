@@ -1,4 +1,5 @@
 import Foundation
+import zlib
 
 extension Vault {
     /// A portable ZIP containing regular vault files; private recovery and symlinks are excluded.
@@ -50,7 +51,7 @@ public enum VaultArchive {
             let filename = Data(name.utf8)
             guard filename.count <= 65535, bytes.count <= UInt32.max, output.count <= UInt32.max else { throw VaultError.backupTooLarge }
             let offset = output.count
-            let crc = checksum(bytes)
+            let crc = ArchiveCRC.update(0, bytes)
             output.le32(0x04034b50); output.le16(20); output.le16(0x0800); output.le16(0)
             output.le16(0); output.le16(33); output.le32(crc)
             output.le32(UInt32(bytes.count)); output.le32(UInt32(bytes.count)); output.le16(UInt16(filename.count)); output.le16(0)
@@ -67,19 +68,14 @@ public enum VaultArchive {
         output.le16(UInt16(entries.count)); output.le16(UInt16(entries.count)); output.le32(UInt32(central.count)); output.le32(UInt32(offset)); output.le16(0)
         return output
     }
-    private static func checksum(_ data: Data) -> UInt32 { ~ArchiveCRC.update(0xffffffff, data) }
 }
 
 private enum ArchiveCRC {
-    static let table: [UInt32] = (0..<256).map { value in
-        var crc = UInt32(value)
-        for _ in 0..<8 { crc = (crc >> 1) ^ (crc & 1 == 0 ? 0 : 0xedb88320) }
-        return crc
-    }
     static func update(_ initial: UInt32, _ data: Data) -> UInt32 {
-        var crc = initial
-        for byte in data { crc = (crc >> 8) ^ table[Int((crc ^ UInt32(byte)) & 0xff)] }
-        return crc
+        data.withUnsafeBytes { buffer in
+            guard let bytes = buffer.bindMemory(to: UInt8.self).baseAddress else { return initial }
+            return UInt32(crc32_z(uLong(initial), bytes, buffer.count))
+        }
     }
 }
 
@@ -104,7 +100,7 @@ private final class StreamingArchive {
         header.le16(0); header.le16(33); header.le32(0); header.le32(0); header.le32(0)
         header.le16(UInt16(filename.count)); header.le16(0); header.append(filename)
         try handle.write(contentsOf: header)
-        var crc: UInt32 = 0xffffffff
+        var crc: UInt32 = 0
         var size: UInt32 = 0
         if let source {
             let input = try FileHandle(forReadingFrom: source)
@@ -117,7 +113,6 @@ private final class StreamingArchive {
                 try handle.write(contentsOf: chunk)
             }
         }
-        crc = ~crc
         var descriptor = Data()
         descriptor.le32(0x08074b50); descriptor.le32(crc); descriptor.le32(size); descriptor.le32(size)
         try handle.write(contentsOf: descriptor)

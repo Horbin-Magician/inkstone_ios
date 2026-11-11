@@ -31,8 +31,7 @@ struct LibraryView: View {
         let revision: Int
     }
     @State private var completedSearch: SearchRequest?
-    @State private var searchResults: [Note] = []
-    @State private var searchPresentations: [String: NoteSearchResult] = [:]
+    @State private var searchResults: [NoteSearchResult] = []
     private var searchRequest: SearchRequest { SearchRequest(query: query, revision: store.notesRevision) }
     private var searching: Bool { !query.isEmpty && completedSearch != searchRequest }
     private var libraryInteractionActive: Bool {
@@ -163,13 +162,12 @@ struct LibraryView: View {
         .onDisappear { store.setSyncForeground(false) }
         .task(id: searchRequest) {
             let request = searchRequest
-            guard !request.query.isEmpty else { searchResults = []; searchPresentations = [:]; completedSearch = nil; return }
+            guard !request.query.isEmpty else { searchResults = []; completedSearch = nil; return }
             do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
             let notes = store.browsableNotes
             let results = await NoteIndex.searchResultsConcurrently(notes, query: request.query, alreadySorted: true)
             guard !Task.isCancelled else { return }
-            searchResults = results.map(\.note)
-            searchPresentations = Dictionary(uniqueKeysWithValues: results.map { ($0.note.path, $0) })
+            searchResults = results
             completedSearch = request
         }
     }
@@ -177,7 +175,6 @@ struct LibraryView: View {
         Binding(get: { wideLayout ? nil : store.selected }, set: { if !wideLayout { store.selected = $0 } })
     }
     private var visibleNotes: [Note] {
-        if !query.isEmpty { return searchResults }
         switch scope {
         case .recent: return store.browsableNotes
         case .favorites: return store.browsableNotes.filter { store.favorites.contains($0.path) }
@@ -188,7 +185,9 @@ struct LibraryView: View {
         store.folders.filter { ($0 as NSString).deletingLastPathComponent == store.currentFolder }
     }
     private var library: some View {
-        List {
+        let notes = query.isEmpty ? visibleNotes : []
+        let folders = scope == .folders && query.isEmpty ? childFolders : []
+        return List {
             if scope == .folders && query.isEmpty {
                 if !store.currentFolder.isEmpty {
                     Button { store.currentFolder = (store.currentFolder as NSString).deletingLastPathComponent } label: {
@@ -198,7 +197,7 @@ struct LibraryView: View {
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .listRowSeparator(.hidden, edges: .top)
                 }
-                ForEach(childFolders, id: \.self) { folder in
+                ForEach(folders, id: \.self) { folder in
                     Button { store.currentFolder = folder } label: {
                         HStack {
                             Image(systemName: "folder").foregroundStyle(InkTheme.accent)
@@ -208,24 +207,18 @@ struct LibraryView: View {
                         }.frame(minHeight: 36).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-                    .listRowSeparator(store.currentFolder.isEmpty && folder == childFolders.first ? .hidden : .automatic, edges: .top)
+                    .listRowSeparator(store.currentFolder.isEmpty && folder == folders.first ? .hidden : .automatic, edges: .top)
                     .contextMenu { folderActions(folder) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) { folderActions(folder) }
                 }
             }
             if !searching {
-                ForEach(visibleNotes) { note in
-                    noteButton(note)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            // Keep delete first so a full swipe opens the deletion confirmation.
-                            deleteButton(note).tint(.red)
-                            Button { store.toggleFavorite(note.path) } label: {
-                                Label(store.favorites.contains(note.path) ? "移除书签" : "书签", systemImage: "bookmark")
-                            }.tint(InkTheme.accent)
-                            Button { renaming = false; moving = note.path } label: {
-                                Label("移动", systemImage: "folder")
-                            }
-                        }
+                if query.isEmpty {
+                    ForEach(notes) { note in noteButton(note) }
+                } else {
+                    ForEach(searchResults, id: \.note.path) { result in
+                        noteButton(result.note, presentation: result)
+                    }
                 }
             }
             if !store.warnings.isEmpty {
@@ -237,7 +230,7 @@ struct LibraryView: View {
         }
         .listStyle(.plain)
         .overlay {
-            if visibleNotes.isEmpty && !store.loading && !store.syncing && !searching && (scope != .folders || !query.isEmpty || childFolders.isEmpty) {
+            if (query.isEmpty ? notes.isEmpty : searchResults.isEmpty) && !store.loading && !store.syncing && !searching && (scope != .folders || !query.isEmpty || folders.isEmpty) {
                 if scope == .favorites && query.isEmpty {
                     ContentUnavailableView("暂无书签", systemImage: "bookmark", description: Text("为笔记添加书签后，会显示在这里。"))
                 } else {
@@ -331,7 +324,7 @@ struct LibraryView: View {
         .controlSize(.large)
     }
 
-    private func noteButton(_ note: Note) -> some View {
+    private func noteButton(_ note: Note, presentation: NoteSearchResult? = nil) -> some View {
         Button {
             if selecting {
                 if selectedPaths.contains(note.path) { selectedPaths.remove(note.path) } else { selectedPaths.insert(note.path) }
@@ -346,10 +339,10 @@ struct LibraryView: View {
                     Spacer(minLength: 0)
                     Text(note.modified, format: .dateTime.month().day()).font(.caption2).foregroundStyle(.tertiary)
                 }
-                let presentation = query.isEmpty ? nil : searchPresentations[note.path]
                 let summary = presentation?.summary ?? note.excerpt
                 if !summary.isEmpty {
-                    Text(highlighted(summary, ranges: presentation?.highlights ?? [])).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    let ranges = presentation?.highlights ?? []
+                    (ranges.isEmpty ? Text(verbatim: summary) : Text(highlighted(summary, ranges: ranges))).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if !note.folder.isEmpty && (scope != .folders || !query.isEmpty) {
                     Text(note.folder).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
@@ -368,6 +361,16 @@ struct LibraryView: View {
             }
             Button { store.toggleFavorite(note.path) } label: { Label(store.favorites.contains(note.path) ? "移除书签" : "书签", systemImage: "bookmark") }
             deleteButton(note)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            // Keep delete first so a full swipe opens the deletion confirmation.
+            deleteButton(note).tint(.red)
+            Button { store.toggleFavorite(note.path) } label: {
+                Label(store.favorites.contains(note.path) ? "移除书签" : "书签", systemImage: "bookmark")
+            }.tint(InkTheme.accent)
+            Button { renaming = false; moving = note.path } label: {
+                Label("移动", systemImage: "folder")
+            }
         }
     }
     private func highlighted(_ value: String, ranges: [NSRange]) -> AttributedString {
@@ -448,6 +451,7 @@ struct FileLocationView: View {
                         }
                     }
                 }
+                let affected = self.affected
                 if !affected.isEmpty {
                     Section("受影响的引用 · \(affected.count) 篇笔记") {
                         Text("移动或重命名后这些链接可能失效。当前不会自动改写正文，请核对后再操作。")
