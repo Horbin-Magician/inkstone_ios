@@ -38,6 +38,23 @@ public struct Note: Identifiable, Hashable, Codable, Sendable {
         self.path = path; self.text = text; self.modified = modified
         self.title = title; self.folder = folder; self.metadata = metadata; self.excerpt = excerpt
     }
+    public static func == (lhs: Note, rhs: Note) -> Bool {
+        // Check cheap metadata before comparing potentially multi-megabyte Markdown bodies.
+        lhs.path == rhs.path
+            && lhs.modified == rhs.modified
+            && lhs.title == rhs.title
+            && lhs.folder == rhs.folder
+            && lhs.excerpt == rhs.excerpt
+            && lhs.metadata == rhs.metadata
+            && lhs.text == rhs.text
+    }
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(path)
+        hasher.combine(modified)
+        hasher.combine(title)
+        hasher.combine(folder)
+        hasher.combine(excerpt)
+    }
 }
 
 /// Immutable presentation data produced alongside background search results.

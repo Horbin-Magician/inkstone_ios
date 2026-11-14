@@ -327,4 +327,26 @@ final class VaultTests {
         #expect((snapshot.notes.isEmpty))
         #expect(snapshot.warnings.count == 1)
     }
+    @Test func noteEqualityDistinguishesTailEditsWithIdenticalMetadataAndMatchesEqualValues() {
+        let prefix = String(repeating: "a", count: 200)
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = Note(path: "same.md", text: prefix + "-one", modified: date)
+        let duplicate = Note(path: "same.md", text: String(prefix + "-one"), modified: date)
+        let tailEdited = Note(path: "same.md", text: prefix + "-two", modified: date)
+        #expect(first == duplicate)
+        #expect(first.hashValue == duplicate.hashValue)
+        #expect(first != tailEdited)
+        #expect(first != Note(path: "same.md", text: prefix + "-one", modified: date.addingTimeInterval(1)))
+    }
+    @Test func applySavedSkipsUnchangedNotesAndUpdatesChangedNotes() async throws {
+        let created = try await vault.create(path: "folder/note.md", text: "first")
+        let initial = try await vault.scan()
+        let current = try #require(initial.notes.first)
+        #expect(await vault.applySaved(current) == nil)
+        let updated = try await vault.save(path: created.path, text: "second", expected: "first")
+        let next = try #require(await vault.applySaved(updated))
+        #expect(next.notes.map(\.text) == ["second"])
+        #expect(next.folders == ["folder"])
+        #expect(await vault.applySaved(updated) == nil)
+    }
 }

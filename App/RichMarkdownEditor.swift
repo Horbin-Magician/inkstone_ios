@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import WebKit
 import UniformTypeIdentifiers
 import InkstoneCore
@@ -6,9 +7,48 @@ import InkstoneCore
 /// Flush the WebKit editing transaction before saving or replacing an editor.
 @MainActor final class RichEditorBridge: ObservableObject {
     weak var webView: WKWebView?
-    @Published var session = EditorSession()
+    var session: EditorSession {
+        didSet { syncPublishedState() }
+    }
+    @Published private(set) var documentID: UUID
+    @Published private(set) var hasPendingSnapshot: Bool
+    @Published private(set) var composing: Bool
+    @Published private(set) var isSaving: Bool
+    @Published private(set) var snapshotFailure: String?
+    let editEvents = PassthroughSubject<Void, Never>()
+    var saveTask: Task<Void, Never>?
     var receive: (([String: Any]) -> Bool)?
     private var pendingFlush: (documentID: UUID, token: UUID, frozen: Bool, task: Task<Bool, Never>)?
+
+    init() {
+        let initial = EditorSession()
+        self.session = initial
+        self.documentID = initial.documentID
+        self.hasPendingSnapshot = initial.hasPendingSnapshot
+        self.composing = initial.composing
+        self.isSaving = initial.isSaving
+        self.snapshotFailure = initial.snapshotFailure
+    }
+
+    private func syncPublishedState() {
+        if documentID != session.documentID { documentID = session.documentID }
+        let pending = session.hasPendingSnapshot
+        if hasPendingSnapshot != pending { hasPendingSnapshot = pending }
+        if composing != session.composing { composing = session.composing }
+        let saving = session.isSaving
+        if isSaving != saving { isSaving = saving }
+        if snapshotFailure != session.snapshotFailure { snapshotFailure = session.snapshotFailure }
+    }
+
+    func notifyChanged(version: Int, composing: Bool) {
+        let previousVersion = session.editingVersion
+        session.changed(version: version, composing: composing)
+        if session.editingVersion != previousVersion { editEvents.send() }
+    }
+    func resetSession() { session = EditorSession() }
+    func useLastSnapshot() { session.useLastSnapshot() }
+    func setComposing(_ value: Bool) { if session.composing != value { session.composing = value } }
+    func setSavePhase(_ phase: EditorSession.SavePhase) { if session.savePhase != phase { session.savePhase = phase } }
 
     func beginTransition() -> Bool {
         guard !session.transitioning, !session.composing else { return false }
@@ -62,7 +102,7 @@ typealias RichEditorRepresentable = NSViewRepresentable
 
 struct RichMarkdownEditor: RichEditorRepresentable {
     @Environment(\.colorScheme) private var colorScheme
-    private var palette: [String: String] {
+    private static func makePalette(for colorScheme: ColorScheme) -> [String: String] {
         let colors: [String: Color] = ["accent": InkTheme.accent, "background": InkTheme.documentBackground,
             "text": .primary, "muted": .secondary, "line": .secondary.opacity(0.18), "panel": InkTheme.background, "inline-code": .secondary.opacity(0.12)]
         return colors.mapValues { color in
@@ -84,10 +124,12 @@ struct RichMarkdownEditor: RichEditorRepresentable {
     @Binding var composing: Bool
     let active: Bool
     let documentID: UUID
+    let textRevision: Int
     let imageContext: ImageResourceContext
     let fontSize: Double
     let lineSpacing: Double
     let titles: [String]
+    let titlesRevision: Int
     let bridge: RichEditorBridge
     let loadAttachment: @Sendable (String) async throws -> Data
     let pasteImage: (Data, String) async -> String?
@@ -140,6 +182,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var ready = false
         var enabled = true
         var lastSource: String?
+        var lastTextRevision = -1
         var lastID: UUID?
         var lastImageContext: String?
         var revision = -1
@@ -147,8 +190,9 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         var lastFocus: Bool?
         var lastEnabled: Bool?
         var appearance: [Double] = []
+        var lastColorScheme: ColorScheme?
         var lastPalette: [String: String] = [:]
-        var lastTitles: [String] = []
+        var lastTitlesRevision = -1
         init(_ parent: RichMarkdownEditor) {
             self.parent = parent
             attachments = RichAttachmentHandler(loader: parent.loadAttachment, context: parent.imageContext)
@@ -164,12 +208,16 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             var updates: [[Any]] = []
             func enqueue(_ name: String, _ arguments: [Any] = []) { updates.append([name, arguments]) }
             if parent.active && lastID != parent.documentID {
-                lastID = parent.documentID; revision = -1; lastSource = parent.text; lastFocus = nil; lastEnabled = nil
+                lastID = parent.documentID; revision = -1; lastSource = parent.text; lastTextRevision = parent.textRevision
+                lastFocus = nil; lastEnabled = nil
                 lastImageContext = parent.imageContext.token
                 enqueue("load", [parent.text, parent.documentID.uuidString, parent.bridge.session.editingVersion, parent.imageContext.token])
-            } else if parent.active && lastSource != parent.text {
-                lastSource = parent.text; lastEnabled = nil
-                enqueue("setSource", [parent.text, parent.documentID.uuidString])
+            } else if parent.active && lastTextRevision != parent.textRevision {
+                lastTextRevision = parent.textRevision
+                if lastSource != parent.text {
+                    lastSource = parent.text; lastEnabled = nil
+                    enqueue("setSource", [parent.text, parent.documentID.uuidString])
+                }
             }
             if lastImageContext != parent.imageContext.token {
                 lastImageContext = parent.imageContext.token
@@ -183,13 +231,19 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             if lastEnabled != editable {
                 lastEnabled = editable; enqueue("setEnabled", [editable])
             }
-            if lastPalette != parent.palette {
-                lastPalette = parent.palette; enqueue("setPalette", [lastPalette])
+            if lastColorScheme != parent.colorScheme {
+                lastColorScheme = parent.colorScheme
+                let nextPalette = RichMarkdownEditor.makePalette(for: parent.colorScheme)
+                if lastPalette != nextPalette {
+                    lastPalette = nextPalette; enqueue("setPalette", [lastPalette])
+                }
             }
             if appearance != [parent.fontSize, parent.lineSpacing] {
                 appearance = [parent.fontSize, parent.lineSpacing]; enqueue("setAppearance", appearance)
             }
-            if parent.active && lastTitles != parent.titles { lastTitles = parent.titles; enqueue("setTitles", [lastTitles]) }
+            if parent.active && lastTitlesRevision != parent.titlesRevision {
+                lastTitlesRevision = parent.titlesRevision; enqueue("setTitles", [parent.titles])
+            }
             let focused = parent.active && parent.focused
             if lastFocus != focused {
                 lastFocus = focused; enqueue("focus", [focused])
@@ -215,7 +269,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
             switch type {
             case "change":
                 guard let version = body["revision"] as? Int, let composing = body["composing"] as? Bool else { return }
-                parent.bridge.session.changed(version: version, composing: composing)
+                parent.bridge.notifyChanged(version: version, composing: composing)
             case "composition": parent.composing = body["composing"] as? Bool ?? false
             case "focus":
                 let focused = body["focused"] as? Bool ?? false
@@ -242,7 +296,7 @@ struct RichMarkdownEditor: RichEditorRepresentable {
         }
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
             guard parent.documentID == parent.bridge.session.documentID else { return }
-            ready = false; lastID = nil; lastActive = nil; appearance = []; lastTitles = []
+            ready = false; lastID = nil; lastTextRevision = -1; lastActive = nil; appearance = []; lastColorScheme = nil; lastPalette = [:]; lastTitlesRevision = -1
             parent.composing = false
             parent.bridge.session.snapshotFailure = "富文本编辑进程中断，无法确认最新修改。可以保留最近取得的快照并转到源码编辑。"
             parent.onError(parent.bridge.session.snapshotFailure!)

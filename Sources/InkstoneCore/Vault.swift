@@ -169,15 +169,15 @@ public actor Vault {
         }
     }
     public func scan() throws -> VaultSnapshot {
-        let previousNotes = cachedNotes, previousFolders = cachedFolders
-        let snapshot = try coordinatedReadBatch { coordinator in
+        let previousFolders = cachedFolders
+        let (snapshot, notesChanged) = try coordinatedReadBatch { coordinator in
             try scan(coordinator: coordinator)
         }
-        if previousNotes != snapshot.notes || previousFolders != snapshot.folders { startupCacheDirty = true }
+        if notesChanged || previousFolders != snapshot.folders { startupCacheDirty = true }
         persistStartupCache()
         return snapshot
     }
-    private func scan(coordinator: NSFileCoordinator) throws -> VaultSnapshot {
+    private func scan(coordinator: NSFileCoordinator) throws -> (VaultSnapshot, Bool) {
         var notes: [Note] = [], warnings: [String] = [], folders: [String] = []
         var nextCache: [String: Note] = [:]
         var changedNotes: [Note] = []
@@ -212,7 +212,8 @@ public actor Vault {
                 notes.append(note)
             } catch { warnings.append("\(file.lastPathComponent)：\(error.localizedDescription)") }
         }
-        if changedNotes.isEmpty && nextCache.count == noteCache.count {
+        let notesChanged = !changedNotes.isEmpty || nextCache.count != noteCache.count
+        if !notesChanged {
             notes = cachedNotes
         } else {
             notes.sort { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
@@ -227,23 +228,33 @@ public actor Vault {
         }
         noteCache = nextCache; cachedNotes = notes
         cachedFolders = folders.sorted(); cachedWarnings = warnings
-        return VaultSnapshot(notes: notes, warnings: warnings, folders: cachedFolders, index: cachedIndex)
+        return (VaultSnapshot(notes: notes, warnings: warnings, folders: cachedFolders, index: cachedIndex), notesChanged)
     }
     /// Update the known library after our own write, without reading unrelated files.
     /// Explicit refresh / foreground scans still detect external edits, even unchanged timestamps.
     public func snapshotAfterSaving(_ note: Note) -> VaultSnapshot {
+        applySaved(note) ?? VaultSnapshot(notes: cachedNotes, warnings: cachedWarnings, folders: cachedFolders, index: cachedIndex)
+    }
+    /// Apply a saved note to the cached snapshot, returning nil if it matches the cached version.
+    public func applySaved(_ note: Note) -> VaultSnapshot? {
         if noteCache[note.path] == note {
-            return VaultSnapshot(notes: cachedNotes, warnings: cachedWarnings, folders: cachedFolders, index: cachedIndex)
+            return nil
         }
         startupCacheDirty = true
         noteCache[note.path] = note
         var parent = note.folder
+        var folderAdded = false
         while !parent.isEmpty {
-            if !cachedFolders.contains(parent) { cachedFolders.append(parent) }
+            if !cachedFolders.contains(parent) {
+                cachedFolders.append(parent)
+                folderAdded = true
+            }
             parent = (parent as NSString).deletingLastPathComponent
         }
-        cachedFolders.sort()
-        cachedNotes.removeAll { $0.path == note.path }
+        if folderAdded { cachedFolders.sort() }
+        if let existing = cachedNotes.firstIndex(where: { $0.path == note.path }) {
+            cachedNotes.remove(at: existing)
+        }
         var low = 0, high = cachedNotes.count
         while low < high {
             let middle = (low + high) / 2, candidate = cachedNotes[middle]

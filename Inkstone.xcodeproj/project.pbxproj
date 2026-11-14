@@ -16,7 +16,7 @@
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"CODE_SIGN_ENTITLEMENTS" = "ShareExtension/InkstoneShare.entitlements";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "7";
+				"CURRENT_PROJECT_VERSION" = "8";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"INFOPLIST_FILE" = "ShareExtension/Info.plist";
 				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
@@ -85,7 +85,7 @@
 				"CLANG_ENABLE_OBJC_WEAK" = "YES";
 				"CODE_SIGN_ENTITLEMENTS" = "App/Inkstone.entitlements";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "7";
+				"CURRENT_PROJECT_VERSION" = "8";
 				"ENABLE_PREVIEWS" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"INFOPLIST_FILE" = "App/Info.plist";
@@ -149,7 +149,7 @@
 				"APPLICATION_EXTENSION_API_ONLY" = "YES";
 				"CODE_SIGN_ENTITLEMENTS" = "ShareExtension/InkstoneShare.entitlements";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "7";
+				"CURRENT_PROJECT_VERSION" = "8";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"INFOPLIST_FILE" = "ShareExtension/Info.plist";
 				"IPHONEOS_DEPLOYMENT_TARGET" = "17.0";
@@ -404,7 +404,7 @@
 				"CLANG_ENABLE_OBJC_WEAK" = "YES";
 				"CODE_SIGN_ENTITLEMENTS" = "App/Inkstone.entitlements";
 				"CODE_SIGN_STYLE" = "Automatic";
-				"CURRENT_PROJECT_VERSION" = "7";
+				"CURRENT_PROJECT_VERSION" = "8";
 				"ENABLE_PREVIEWS" = "YES";
 				"GENERATE_INFOPLIST_FILE" = "NO";
 				"INFOPLIST_FILE" = "App/Info.plist";

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject var store: LibraryStore
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var recovery: Bool
     @State private var folderPicker = false
     @State private var backup: ArchiveFile?
@@ -14,39 +15,64 @@ struct SettingsView: View {
     @State private var importPicker = false
     @AppStorage("readingSize") private var readingSize = 17.0
     @AppStorage("readingSpacing") private var readingSpacing = 5.0
+    @State private var draftWebDAV = WebDAVSettings()
+    @State private var draftPassword = ""
+    @State private var draftLibraryID: String?
+    @FocusState private var focusedField: SyncField?
+    private enum SyncField: Hashable { case url, username, password }
+    private struct SyncDraftKey: Equatable {
+        let webDAV: WebDAVSettings
+        let password: String
+    }
+    private func loadDraftFromStore() {
+        draftWebDAV = store.webDAV
+        draftPassword = store.webDAVPassword
+        draftLibraryID = store.imageLibraryID
+    }
+    private func commitSyncSettings() {
+        guard draftLibraryID == store.imageLibraryID else { return }
+        store.updateSyncSettings(draftWebDAV, password: draftPassword)
+    }
     var body: some View {
         Form {
             Section {
                 LabeledContent("当前笔记库", value: store.vaultName)
                 LabeledContent("存储方式", value: store.external ? "文件提供商" : "此设备")
-                Button { folderPicker = true } label: { Label("打开笔记文件夹", systemImage: "folder") }.disabled(store.loading || store.syncing)
+                Button { commitSyncSettings(); folderPicker = true } label: { Label("打开笔记文件夹", systemImage: "folder") }.disabled(store.loading || store.syncing)
                 Button { importPicker = true } label: { Label("导入 Markdown", systemImage: "square.and.arrow.down") }.disabled(store.loading || store.syncing)
-                if store.external { Button("返回本地笔记库") { Task { await store.openLocal() } }.disabled(store.loading || store.syncing) }
+                if store.external { Button("返回本地笔记库") { commitSyncSettings(); Task { await store.openLocal() } }.disabled(store.loading || store.syncing) }
             } header: { Text("笔记库") } footer: {
                 Text("iCloud 等文件提供商负责传输，下拉笔记列表可刷新。")
             }
             Section {
-                TextField("WebDAV 目录地址（默认 HTTPS）", text: $store.webDAV.url)
+                TextField("WebDAV 目录地址（默认 HTTPS）", text: $draftWebDAV.url)
+                    .focused($focusedField, equals: .url)
+                    .onSubmit { commitSyncSettings() }
                     .autocorrectionDisabled()
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
                     #endif
-                TextField("用户名", text: $store.webDAV.username).autocorrectionDisabled()
+                TextField("用户名", text: $draftWebDAV.username)
+                    .focused($focusedField, equals: .username)
+                    .onSubmit { commitSyncSettings() }
+                    .autocorrectionDisabled()
                     #if os(iOS)
                     .textInputAutocapitalization(.never)
                     #endif
-                SecureField("密码或应用专用密码", text: $store.webDAVPassword)
-                Toggle("允许未加密 HTTP（兼容旧服务器）", isOn: $store.webDAV.allowInsecureHTTP)
-                if store.webDAV.allowInsecureHTTP {
+                SecureField("密码或应用专用密码", text: $draftPassword)
+                    .focused($focusedField, equals: .password)
+                    .onSubmit { commitSyncSettings() }
+                Toggle("允许未加密 HTTP（兼容旧服务器）", isOn: $draftWebDAV.allowInsecureHTTP)
+                if draftWebDAV.allowInsecureHTTP {
                     Text("HTTP 会以未加密方式传输账号凭据、笔记和附件。仅在确认需要兼容时开启，并使用明确的 http:// 地址。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Toggle("自动同步", isOn: Binding(
                     get: { store.automaticSync },
-                    set: { store.setAutomaticSync($0) }
+                    set: { commitSyncSettings(); store.setAutomaticSync($0) }
                 ))
-                Button("测试连接") { Task { await store.sync(testOnly: true) } }
+                Button("测试连接") { commitSyncSettings(); Task { await store.sync(testOnly: true) } }
             } header: { Text("WebDAV 连接配置") } footer: {
                 if let error = store.syncSettingsSaveError {
                     Text(error).foregroundStyle(.red)
@@ -58,7 +84,7 @@ struct SettingsView: View {
             Section {
                 Text(store.syncSummary)
                 if let date = store.lastSync { LabeledContent("上次成功", value: date.formatted(date: .abbreviated, time: .shortened)) }
-                Button("立即同步") { Task { await store.sync() } }
+                Button("立即同步") { commitSyncSettings(); Task { await store.sync() } }
                 HStack(spacing: 6) {
                     if store.syncing { ProgressView().controlSize(.small).tint(.secondary) }
                     Text(store.syncStatus).font(.footnote).foregroundStyle(.secondary)
@@ -129,6 +155,20 @@ struct SettingsView: View {
             case .success(let urls): Task { await store.importFiles(urls) }
             case .failure(let error): store.error = error.localizedDescription
             }
+        }
+        .onAppear { loadDraftFromStore() }
+        .onDisappear { commitSyncSettings() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { commitSyncSettings() } }
+        .onChange(of: focusedField) { previous, current in if previous != nil && current == nil { commitSyncSettings() } }
+        .onChange(of: draftWebDAV.allowInsecureHTTP) { _, _ in commitSyncSettings() }
+        .onChange(of: store.imageLibraryID) { _, _ in loadDraftFromStore() }
+        .onChange(of: store.webDAV) { _, newValue in if draftLibraryID == store.imageLibraryID { draftWebDAV = newValue } }
+        .onChange(of: store.webDAVPassword) { _, newValue in if draftLibraryID == store.imageLibraryID { draftPassword = newValue } }
+        .task(id: SyncDraftKey(webDAV: draftWebDAV, password: draftPassword)) {
+            guard draftLibraryID == store.imageLibraryID else { return }
+            guard draftWebDAV != store.webDAV || draftPassword != store.webDAVPassword else { return }
+            do { try await Task.sleep(for: .milliseconds(800)) } catch { return }
+            commitSyncSettings()
         }
     }
 }

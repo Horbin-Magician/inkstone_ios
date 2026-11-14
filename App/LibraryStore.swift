@@ -11,8 +11,8 @@ final class LibraryStore: ObservableObject {
     @Published var lastSync: Date?
     @Published var syncConflicts: [String] = []
     var searchTerm = ""
-    @Published var webDAV = WebDAVSettings() { didSet { automaticallySaveSyncSettings(); rescheduleAutomaticSync() } }
-    @Published var webDAVPassword = "" { didSet { automaticallySaveSyncSettings(); rescheduleAutomaticSync() } }
+    @Published private(set) var webDAV = WebDAVSettings()
+    @Published private(set) var webDAVPassword = ""
     @Published private(set) var syncSettingsSaveError: String?
     @Published var syncStatus = "尚未同步"
     @Published var syncing = false { didSet { rescheduleAutomaticSync() } }
@@ -22,6 +22,7 @@ final class LibraryStore: ObservableObject {
     private var autoSyncSchedule = AutoSyncSchedule() { didSet { rescheduleAutomaticSync() } }
     private var savedSyncSettings: WebDAVSettings? { didSet { rescheduleAutomaticSync() } }
     private var savedSyncPassword = "" { didSet { rescheduleAutomaticSync() } }
+    private var savedCredentialAccount: String?
     private var mutationsInProgress = 0 { didSet { rescheduleAutomaticSync() } }
     private let autoSyncScheduler = AutoSyncScheduler()
     private var syncForeground = false
@@ -30,6 +31,7 @@ final class LibraryStore: ObservableObject {
     private(set) var noteIndex = NoteIndex(notes: [])
     private(set) var notesRevision = 0
     private(set) var linkTitles: [String] = []
+    private(set) var linkTitlesRevision = 0
     private var linkPaths: Set<String> = []
     @Published var warnings: [String] = []
     @Published var error: String?
@@ -134,12 +136,13 @@ final class LibraryStore: ObservableObject {
             favorites = Set(defaults.stringArray(forKey: favoriteKey) ?? [])
             webDAV = defaults.data(forKey: syncKey).flatMap { try? JSONDecoder().decode(WebDAVSettings.self, from: $0) } ?? WebDAVSettings()
             automaticSync = defaults.object(forKey: syncKey + ".automatic") as? Bool ?? true
-            savedSyncSettings = nil; savedSyncPassword = ""; syncIssue = nil; syncSettingsSaveError = nil
+            savedSyncSettings = nil; savedSyncPassword = ""; savedCredentialAccount = nil; syncIssue = nil; syncSettingsSaveError = nil
             autoSyncSchedule = AutoSyncSchedule()
             webDAVPassword = ""; syncStatus = defaults.string(forKey: syncKey + ".status") ?? "尚未同步"
             do {
-                webDAVPassword = try WebDAVCredentials.read(credentialKey())
-                savedSyncSettings = webDAV; savedSyncPassword = webDAVPassword
+                let account = credentialKey(for: webDAV)
+                webDAVPassword = try WebDAVCredentials.read(account)
+                savedSyncSettings = webDAV; savedSyncPassword = webDAVPassword; savedCredentialAccount = account
             }
             catch { self.error = "无法读取钥匙串中的 WebDAV 密码：" + error.localizedDescription }
             if cached != nil {
@@ -153,6 +156,7 @@ final class LibraryStore: ObservableObject {
                     pendingOpenPath = nil
                     self.error = "笔记库更新失败，请刷新后重试：" + error.localizedDescription
                     // Do not leave unverified content available for editing after failure.
+                    if !linkTitles.isEmpty { linkTitlesRevision &+= 1 }
                     notes = []; folders = []; linkPaths = []; linkTitles = []
                     noteIndex = NoteIndex(notes: []); notesRevision &+= 1
                 }
@@ -173,16 +177,24 @@ final class LibraryStore: ObservableObject {
         }
     }
     func acceptSaved(_ note: Note) async {
-        guard let vault else { return }
-        apply(await vault.snapshotAfterSaving(note))
+        guard let vault, let snapshot = await vault.applySaved(note) else { return }
+        apply(snapshot, savedPath: note.path)
     }
-    private func apply(_ snapshot: VaultSnapshot) {
+    private func apply(_ snapshot: VaultSnapshot, savedPath: String? = nil) {
         noteIndex = snapshot.index
-        if notes != snapshot.notes {
-            let paths = Set(snapshot.notes.map(\.path))
-            if paths != linkPaths {
-                linkPaths = paths
-                linkTitles = paths.sorted().map { "/" + ($0 as NSString).deletingPathExtension }
+        if savedPath != nil || notes != snapshot.notes {
+            if let savedPath {
+                if linkPaths.insert(savedPath).inserted {
+                    linkTitles = linkPaths.sorted().map { "/" + ($0 as NSString).deletingPathExtension }
+                    linkTitlesRevision &+= 1
+                }
+            } else {
+                let paths = Set(snapshot.notes.map(\.path))
+                if paths != linkPaths {
+                    linkPaths = paths
+                    linkTitles = paths.sorted().map { "/" + ($0 as NSString).deletingPathExtension }
+                    linkTitlesRevision &+= 1
+                }
             }
             notesRevision &+= 1
             notes = snapshot.notes
@@ -192,16 +204,18 @@ final class LibraryStore: ObservableObject {
         if folders != snapshot.folders { folders = snapshot.folders }
     }
     private var syncKey: String { "webdav." + favoriteKey }
-    private func credentialKey() -> String {
+    private func credentialKey(for settings: WebDAVSettings) -> String {
         // Keep existing valid endpoint keys compatible; incomplete input also needs
         // a Keychain identity so drafts never put passwords in UserDefaults.
-        let connection = (try? webDAV.credentialIdentity()) ?? "draft\n" + webDAV.url + "\n" + webDAV.username
+        let connection = (try? settings.credentialIdentity()) ?? "draft\n" + settings.url + "\n" + settings.username
         let identity = syncKey + "\n" + connection
         return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    private func automaticallySaveSyncSettings() {
-        // Loading a vault assigns settings and credentials separately. Never save
-        // that intermediate state over the stored credentials.
+    func updateSyncSettings(_ settings: WebDAVSettings, password: String) {
+        guard settings != webDAV || password != webDAVPassword || syncSettingsSaveError != nil else { return }
+        webDAV = settings
+        webDAVPassword = password
+        rescheduleAutomaticSync()
         guard vault != nil, !loading else { return }
         do { try saveSyncSettings() }
         catch { syncSettingsSaveError = "配置自动保存失败：" + error.localizedDescription }
@@ -211,14 +225,18 @@ final class LibraryStore: ObservableObject {
             syncSettingsSaveError = nil
             return
         }
-        try WebDAVCredentials.save(webDAVPassword, account: credentialKey())
+        let account = credentialKey(for: webDAV)
+        try WebDAVCredentials.save(webDAVPassword, account: account)
         defaults.set(try JSONEncoder().encode(webDAV), forKey: syncKey)
+        if let previousAccount = savedCredentialAccount, previousAccount != account {
+            try? WebDAVCredentials.delete(previousAccount)
+        }
         if savedSyncSettings != webDAV {
             lastSync = nil; pendingSync = true; syncConflicts = []
             defaults.removeObject(forKey: syncKey + ".lastSuccess")
             defaults.removeObject(forKey: syncKey + ".conflicts")
         }
-        savedSyncSettings = webDAV; savedSyncPassword = webDAVPassword
+        savedSyncSettings = webDAV; savedSyncPassword = webDAVPassword; savedCredentialAccount = account
         syncSettingsSaveError = nil
         syncIssue = nil
         autoSyncSchedule = AutoSyncSchedule()
