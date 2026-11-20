@@ -15,14 +15,14 @@ public struct Note: Identifiable, Hashable, Codable, Sendable {
         folder = (path as NSString).deletingLastPathComponent
         let document = MarkdownDocument(text)
         metadata = MarkdownMetadata(document: document)
-        excerpt = String(document.previewText.prefix(150))
+        excerpt = document.previewText(limit: 150)
     }
     /// Resolve a draft once before creating either its body or attachments.
     public static func draftPath(folder: String, filename: String, fallback: String) throws -> String {
         let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else { throw VaultError.invalidPath }
-        let leaf = name.isEmpty ? (fallback as NSString).lastPathComponent
-            : name + (name.lowercased().hasSuffix(".md") ? "" : ".md")
+        let rawLeaf = name.isEmpty ? (fallback as NSString).lastPathComponent : name
+        let leaf = rawLeaf.lowercased().hasSuffix(".md") ? rawLeaf : rawLeaf + ".md"
         let path = (folder.isEmpty ? "" : folder + "/") + leaf
         try SyncManifest.validatePath(path)
         return path
@@ -65,20 +65,34 @@ public struct NoteSearchResult: Sendable {
     public let highlights: [NSRange]
     init(note: Note, terms: [String]) {
         self.note = note
-        if let term = terms.first, let match = note.text.range(of: term, options: [.caseInsensitive, .diacriticInsensitive]) {
+        if let term = terms.first, let match = note.text.localizedStandardRange(of: term) {
             let start = note.text.index(match.lowerBound, offsetBy: -35, limitedBy: note.text.startIndex) ?? note.text.startIndex
-            summary = (start == note.text.startIndex ? "" : "…") + String(note.text[start...].prefix(150)).replacingOccurrences(of: "\n", with: " ")
+            let snippet = String(note.text[start...].prefix(150))
+                .replacingOccurrences(of: "\r\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+                .replacingOccurrences(of: "\n", with: " ")
+            summary = (start == note.text.startIndex ? "" : "…") + snippet
         } else { summary = note.excerpt }
         var ranges: [NSRange] = []
         for term in terms {
             var remaining = summary.startIndex..<summary.endIndex
-            while let match = summary.range(of: term, options: [.caseInsensitive, .diacriticInsensitive], range: remaining) {
+            while let match = summary[remaining].localizedStandardRange(of: term) {
                 guard match.lowerBound < match.upperBound else { break }
                 ranges.append(NSRange(match, in: summary))
                 remaining = match.upperBound..<summary.endIndex
             }
         }
-        highlights = ranges
+        ranges.sort { $0.location == $1.location ? $0.length > $1.length : $0.location < $1.location }
+        var merged: [NSRange] = []
+        for range in ranges {
+            if let last = merged.last, range.location <= last.location + last.length {
+                let end = max(last.location + last.length, range.location + range.length)
+                merged[merged.count - 1] = NSRange(location: last.location, length: end - last.location)
+            } else {
+                merged.append(range)
+            }
+        }
+        highlights = merged
     }
 }
 
@@ -155,12 +169,14 @@ public struct NoteIndex: Sendable {
 
     public static func search(_ notes: [Note], query: String) -> [Note] {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        return notes.filter { note in
-            guard !Task.isCancelled else { return false }
-            return terms.allSatisfy {
-                note.path.localizedStandardContains($0) || note.text.localizedStandardContains($0)
+        var matches: [Note] = []
+        for note in notes {
+            if Task.isCancelled { return [] }
+            if terms.allSatisfy({ note.path.localizedStandardContains($0) || note.text.localizedStandardContains($0) }) {
+                matches.append(note)
             }
-        }.sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
+        }
+        return matches.sorted { $0.modified == $1.modified ? $0.path < $1.path : $0.modified > $1.modified }
     }
     /// Bounded parallel scans preserve Foundation's locale-aware substring semantics.
     /// Each child scans a disjoint range and checks cancellation between notes.

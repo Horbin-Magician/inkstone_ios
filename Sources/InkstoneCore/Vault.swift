@@ -53,9 +53,9 @@ public actor Vault {
             }
         }
         self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
         self.recovery = recovery.standardizedFileURL.resolvingSymlinksInPath()
         self.startupCacheURL = startupCache
-        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
     }
     private var noteCache: [String: Note] = [:]
     private var cachedIndex = NoteIndex(notes: [])
@@ -63,7 +63,7 @@ public actor Vault {
     private var cachedNotes: [Note] = []
     private var cachedWarnings: [String] = []
     // Only explicit editor sessions coalesce history; other callers keep every version.
-    private var historyCheckpoint: (path: String, session: UUID, date: Date, text: String)?
+    private var historyCheckpoint: (path: String, session: UUID, date: Date, textHash: String)?
     var syncing = false
     func requireIdle() throws { if syncing { throw VaultError.busy } }
     func fileURL(_ path: String) throws -> URL {
@@ -103,7 +103,8 @@ public actor Vault {
         return result
     }
     private func read(_ url: URL) throws -> String {
-        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw VaultError.invalidPath }
         guard (values.fileSize ?? 0) <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let data = try Data(contentsOf: url)
         guard data.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
@@ -136,10 +137,12 @@ public actor Vault {
               let size = try? startupCacheURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
               size <= 64 * 1024 * 1024,
               let data = try? Data(contentsOf: startupCacheURL),
+              data.count <= 64 * 1024 * 1024,
               let cache = try? PropertyListDecoder().decode(StartupCache.self, from: data),
               cache.version == 1, cache.root == root.path,
               Set(cache.notes.map(\.path)).count == cache.notes.count,
-              cache.notes.allSatisfy({ (try? SyncManifest.validatePath($0.path)) != nil && $0.path.lowercased().hasSuffix(".md") }) else { return nil }
+              cache.notes.allSatisfy({ (try? SyncManifest.validatePath($0.path)) != nil && $0.path.lowercased().hasSuffix(".md") }),
+              cache.folders.allSatisfy({ (try? SyncManifest.validatePath($0)) != nil }) else { return nil }
         startupCacheDirty = false
         noteCache = Dictionary(uniqueKeysWithValues: cache.notes.map { ($0.path, $0) })
         cachedNotes = cache.notes
@@ -185,15 +188,20 @@ public actor Vault {
         guard let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey], options: [.skipsHiddenFiles], errorHandler: { url, error in
             warnings.append("\(url.lastPathComponent)：\(error.localizedDescription)"); return true
         }) else { throw CocoaError(.fileReadUnknown) }
+        let rootPrefix = root.path + "/"
         for case let file as URL in walker {
             do {
                 let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey])
                 if values.isSymbolicLink == true { walker.skipDescendants(); continue }
-                if values.isDirectory == true { folders.append(String(file.standardizedFileURL.resolvingSymlinksInPath().path.dropFirst(root.path.count + 1))); continue }
+                let lexicalPath = file.standardizedFileURL.path
+                guard lexicalPath.hasPrefix(rootPrefix) else { throw VaultError.invalidPath }
+                let path = String(lexicalPath.dropFirst(rootPrefix.count))
+                if values.isDirectory == true {
+                    _ = try fileURL(path)
+                    folders.append(path)
+                    continue
+                }
                 guard values.isRegularFile == true, file.pathExtension.lowercased() == "md" else { continue }
-                let canonical = file.standardizedFileURL.resolvingSymlinksInPath()
-                guard canonical.path.hasPrefix(root.path + "/") else { throw VaultError.invalidPath }
-                let path = String(canonical.path.dropFirst(root.path.count + 1))
                 let checked = try url(path)
                 let text = try coordinated(checked, writing: false, coordinator: coordinator) { try read($0) }
                 let modified = values.contentModificationDate ?? .distantPast
@@ -272,37 +280,45 @@ public actor Vault {
         let text = try coordinated(source, writing: false) { try read($0) }
         return try create(path: source.deletingPathExtension().lastPathComponent + ".md", text: text)
     }
+    private func modifiedDate(_ url: URL) -> Date {
+        var fresh = url
+        fresh.removeAllCachedResourceValues()
+        return (try? fresh.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+    }
     public func create(path: String, text: String) throws -> Note {
         try requireIdle()
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let target = try url(path)
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try coordinated(target, writing: true) { file in
+        let modified = try coordinated(target, writing: true) { file -> Date in
             guard !fm.fileExists(atPath: file.path) else { throw VaultError.exists }
             try Data(text.utf8).write(to: file, options: .withoutOverwriting)
+            return modifiedDate(file)
         }
-        return Note(path: path, text: text)
+        return Note(path: path, text: text, modified: modified)
     }
     public func save(path: String, text: String, expected: String, historySession: UUID? = nil) throws -> Note {
         try requireIdle()
         guard text.utf8.count <= 8 * 1024 * 1024 else { throw VaultError.tooLarge }
         let target = try url(path)
-        try coordinated(target, writing: true) { file in
+        let modified = try coordinated(target, writing: true) { file -> Date in
             guard fm.fileExists(atPath: file.path), try read(file) == expected else { throw VaultError.conflict }
             if text != expected {
                 let now = Date()
                 let checkpoint = historyCheckpoint
+                let expectedHash = digest(Data(expected.utf8))
                 let coalescing = historySession != nil && checkpoint?.session == historySession
-                    && checkpoint?.path == path && checkpoint?.text == expected
+                    && checkpoint?.path == path && checkpoint?.textHash == expectedHash
                     && now.timeIntervalSince(checkpoint!.date) < 60
                 if !coalescing { try record(RecoveryRecord(path: path, text: expected, kind: .history)) }
                 try Data(text.utf8).write(to: file, options: .atomic)
                 if let historySession {
-                    historyCheckpoint = (path, historySession, coalescing ? checkpoint!.date : now, text)
+                    historyCheckpoint = (path, historySession, coalescing ? checkpoint!.date : now, digest(Data(text.utf8)))
                 } else { historyCheckpoint = nil }
             }
+            return modifiedDate(file)
         }
-        return Note(path: path, text: text)
+        return Note(path: path, text: text, modified: modified)
     }
     public func trash(path: String, expected: String) throws {
         try requireIdle()
@@ -317,33 +333,48 @@ public actor Vault {
         try requireIdle()
         let target = try fileURL(path)
         try coordinated(target, writing: true) { folder in
-            guard try folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+            guard try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]).isDirectory == true,
+                  try folder.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
                 throw VaultError.invalidPath
             }
-            // Keep every file, including attachments and hidden files. Hidden backups
-            // are excluded from the recovery-record enumerator.
-            let backup = recovery.appendingPathComponent(".deleted-folders")
-                .appendingPathComponent(UUID().uuidString).appendingPathComponent(path)
-            try fm.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try fm.copyItem(at: folder, to: backup)
             var entries: [RecoveryRecord] = []
             var enumerationError: Error?
             guard let walker = fm.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { _, error in
                 enumerationError = error; return false
             }) else { throw CocoaError(.fileReadUnknown) }
+            let folderPrefix = folder.standardizedFileURL.path + "/"
             for case let file as URL in walker {
                 let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 if values.isSymbolicLink == true { walker.skipDescendants(); continue }
                 guard values.isRegularFile == true, file.pathExtension.lowercased() == "md" else { continue }
-                let folderPath = folder.standardizedFileURL.resolvingSymlinksInPath().path
-                let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
-                let relative = path + "/" + filePath.dropFirst(folderPath.count + 1)
+                let filePath = file.standardizedFileURL.path
+                guard filePath.hasPrefix(folderPrefix) else { throw VaultError.invalidPath }
+                let relative = path + "/" + filePath.dropFirst(folderPrefix.count)
                 entries.append(RecoveryRecord(path: relative, text: try read(file), kind: .deleted))
             }
             if let enumerationError { throw enumerationError }
-            // Finish all recovery writes before removing any source content.
-            for entry in entries { try record(entry) }
-            try fm.removeItem(at: folder)
+            // Keep every file, including attachments and hidden files. Hidden backups
+            // are excluded from the recovery-record enumerator.
+            let backupContainer = recovery.appendingPathComponent(".deleted-folders").appendingPathComponent(UUID().uuidString)
+            let backup = backupContainer.appendingPathComponent(path)
+            var writtenRecords: [RecoveryRecord] = []
+            do {
+                try fm.createDirectory(at: backup.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try fm.copyItem(at: folder, to: backup)
+                // Finish all recovery writes before removing any source content.
+                for entry in entries {
+                    try record(entry)
+                    writtenRecords.append(entry)
+                }
+                try fm.removeItem(at: folder)
+            } catch {
+                try? fm.removeItem(at: backupContainer)
+                for entry in writtenRecords {
+                    try? fm.removeItem(at: recovery.appendingPathComponent(entry.id.uuidString + ".json"))
+                    removeCatalogRecord(entry)
+                }
+                throw error
+            }
         }
     }
     public func createFolder(path: String) throws {
@@ -352,15 +383,36 @@ public actor Vault {
         guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
         try fm.createDirectory(at: target, withIntermediateDirectories: true)
     }
+    private func isSameFile(_ a: URL, _ b: URL) -> Bool {
+        guard let idA = try? a.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier,
+              let idB = try? b.resourceValues(forKeys: [.fileResourceIdentifierKey]).fileResourceIdentifier else {
+            return false
+        }
+        return idA.isEqual(idB)
+    }
     public func move(path: String, to destination: String) throws {
         try requireIdle()
         let source = try fileURL(path), target = try fileURL(destination)
         guard !destination.lowercased().hasPrefix(path.lowercased() + "/") else { throw VaultError.invalidPath }
-        guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
-        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try coordinated(source, writing: true) { source in
-            try fm.moveItem(at: source, to: target)
+        let caseOnlyRename = path.lowercased() == destination.lowercased() && isSameFile(source, target)
+        if !caseOnlyRename {
+            guard !fm.fileExists(atPath: target.path) else { throw VaultError.exists }
         }
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let coordinator = NSFileCoordinator()
+        var coordError: NSError?
+        var moveResult: Result<Void, Error>?
+        coordinator.coordinate(writingItemAt: source, options: .forMoving, writingItemAt: target, options: .forReplacing, error: &coordError) { src, dst in
+            moveResult = Result {
+                if !caseOnlyRename && fm.fileExists(atPath: dst.path) { throw VaultError.exists }
+                coordinator.item(at: src, willMoveTo: dst)
+                try fm.moveItem(at: src, to: dst)
+                coordinator.item(at: src, didMoveTo: dst)
+            }
+        }
+        if let coordError { throw coordError }
+        guard let moveResult else { throw CocoaError(.fileWriteUnknown) }
+        try moveResult.get()
     }
     func record(_ entry: RecoveryRecord) throws {
         let file = recovery.appendingPathComponent(entry.id.uuidString + ".json")
@@ -398,10 +450,22 @@ public actor Vault {
         if let embed = ObsidianImageReference(source: source) {
             return try obsidianImage(embed.target, from: note)
         }
-        guard let parts = URLComponents(string: source), parts.scheme == nil, parts.host == nil else { throw VaultError.invalidPath }
+        let parsedPath: String
+        if let parts = URLComponents(string: source) {
+            guard parts.scheme == nil, parts.host == nil else { throw VaultError.invalidPath }
+            parsedPath = parts.path
+        } else {
+            let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("//"), !trimmed.contains(":"),
+                  let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let parts = URLComponents(string: encoded), parts.scheme == nil, parts.host == nil else {
+                throw VaultError.invalidPath
+            }
+            parsedPath = parts.path
+        }
         // A leading slash denotes the vault root, never the device filesystem.
-        var components = parts.path.hasPrefix("/") ? [] : (note as NSString).deletingLastPathComponent.split(separator: "/").map(String.init)
-        for component in parts.path.split(separator: "/") {
+        var components = parsedPath.hasPrefix("/") ? [] : (note as NSString).deletingLastPathComponent.split(separator: "/").map(String.init)
+        for component in parsedPath.split(separator: "/") {
             if component == "." { continue }
             if component == ".." {
                 guard !components.isEmpty else { throw VaultError.invalidPath }
@@ -410,9 +474,12 @@ public actor Vault {
         }
         let target = try fileURL(components.joined(separator: "/"))
         return try coordinated(target, writing: false) { file in
-            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard size <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
-            return try Data(contentsOf: file)
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { throw VaultError.invalidPath }
+            guard (values.fileSize ?? 0) <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
+            let data = try Data(contentsOf: file)
+            guard data.count <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
+            return data
         }
     }
     private func obsidianImage(_ target: String, from note: String) throws -> Data {
@@ -425,29 +492,43 @@ public actor Vault {
         }
         let folder = (note as NSString).deletingLastPathComponent
         let local = folder.isEmpty ? target : folder + "/" + target
-        for path in (rooted ? [target] : [local, target]) {
+        let candidates = rooted ? [target] : (folder.isEmpty ? [target] : [local, target])
+        var hadValidCandidate = false
+        for path in candidates {
             var components: [String] = []
+            var escaped = false
             for component in path.split(separator: "/") {
                 if component == "." { continue }
                 if component == ".." {
-                    guard !components.isEmpty else { throw VaultError.invalidPath }
+                    guard !components.isEmpty else { escaped = true; break }
                     components.removeLast()
                 } else { components.append(String(component)) }
             }
+            if escaped {
+                if hadValidCandidate { continue }
+                throw VaultError.invalidPath
+            }
             let candidate = components.joined(separator: "/")
             let url = try fileURL(candidate)
-            if fm.fileExists(atPath: url.path) { return try attachment(encoded(candidate), from: "") }
+            hadValidCandidate = true
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue {
+                return try attachment(encoded(candidate), from: "")
+            }
         }
         // A bare filename is commonly stored in a separate Obsidian attachment folder.
         guard !rooted, !target.contains("/"), let walker = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else {
             throw CocoaError(.fileReadNoSuchFile)
         }
+        let rootPrefix = root.path + "/"
         var matches: [String] = []
         for case let file as URL in walker {
             let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             if values.isSymbolicLink == true { walker.skipDescendants(); continue }
             if values.isRegularFile == true && file.lastPathComponent == target {
-                matches.append(String(file.standardizedFileURL.resolvingSymlinksInPath().path.dropFirst(root.path.count + 1)))
+                let lexical = file.standardizedFileURL.path
+                guard lexical.hasPrefix(rootPrefix) else { continue }
+                matches.append(String(lexical.dropFirst(rootPrefix.count)))
                 if matches.count > 1 { throw SyncFailure("有多个同名图片，请在图片引用中填写完整路径。") }
             }
         }
@@ -458,8 +539,12 @@ public actor Vault {
         let access = source.startAccessingSecurityScopedResource()
         defer { if access { source.stopAccessingSecurityScopedResource() } }
         let data = try coordinated(source, writing: false) { file in
-            guard (try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
-            return try Data(contentsOf: file)
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { throw VaultError.invalidPath }
+            guard (values.fileSize ?? 0) <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
+            let data = try Data(contentsOf: file)
+            guard data.count <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
+            return data
         }
         return try insertAttachment(data, extension: source.pathExtension.isEmpty ? "bin" : source.pathExtension, from: note)
     }

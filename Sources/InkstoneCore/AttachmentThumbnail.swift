@@ -7,6 +7,10 @@ public enum AttachmentThumbnail {
     public static func make(data: Data, maxPixelSize: Int) -> CGImage? {
         guard maxPixelSize > 0,
               let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        return make(source: source, maxPixelSize: maxPixelSize)
+    }
+    static func make(source: CGImageSource, maxPixelSize: Int) -> CGImage? {
+        guard maxPixelSize > 0 else { return nil }
         return CGImageSourceCreateThumbnailAtIndex(source, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -22,7 +26,7 @@ public enum AttachmentThumbnail {
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               max(width, height) > maxPixelSize,
-              let image = make(data: data, maxPixelSize: maxPixelSize) else { return nil }
+              let image = make(source: source, maxPixelSize: maxPixelSize) else { return nil }
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, nil)

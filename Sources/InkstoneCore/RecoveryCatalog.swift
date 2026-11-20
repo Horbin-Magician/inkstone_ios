@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum RecoveryKind: String, Codable, Hashable, Sendable {
     case history = "历史版本", syncBefore = "同步前版本", deleted = "已删除", draft = "恢复草稿", other = "其他恢复记录"
@@ -38,6 +39,9 @@ extension Vault {
     func removeCatalogRecord(_ record: RecoveryRecord) {
         try? fm.removeItem(at: bucket(record.path).appendingPathComponent(record.id.uuidString + ".json"))
     }
+    func removeCatalogSummary(_ summary: RecoverySummary) {
+        try? fm.removeItem(at: bucket(summary.path).appendingPathComponent(summary.id.uuidString + ".json"))
+    }
     private func prepareCatalog() throws {
         let ready = catalog.appendingPathComponent("ready")
         if fm.fileExists(atPath: ready.path) { return }
@@ -45,15 +49,32 @@ extension Vault {
         var scanError: Error?
         guard let walker = fm.enumerator(at: recovery, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles], errorHandler: { _, error in scanError = error; return false }) else { throw CocoaError(.fileReadUnknown) }
         for case let file as URL in walker where file.pathExtension == "json" {
-            let record = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
+            guard let data = try? Data(contentsOf: file),
+                  let record = try? JSONDecoder().decode(RecoveryRecord.self, from: data) else { continue }
             try catalogRecord(record, file: file)
         }
         if let scanError { throw scanError }
         try Data().write(to: ready, options: .atomic)
     }
-    private func recordURL(_ summary: RecoverySummary) throws -> URL {
-        let file = recovery.appendingPathComponent(summary.file).standardizedFileURL.resolvingSymlinksInPath()
-        guard file.path.hasPrefix(recovery.standardizedFileURL.resolvingSymlinksInPath().path + "/"),
+    func recordURL(_ summary: RecoverySummary) throws -> URL {
+        guard !summary.file.isEmpty, !summary.file.hasPrefix("/"), !summary.file.contains("\\"),
+              !summary.file.split(separator: "/").contains("..") else { throw VaultError.invalidPath }
+        let rootPath = recovery.path
+        var candidate = rootPath
+        for part in summary.file.split(separator: "/") {
+            candidate += "/" + part
+            var attributes = stat()
+            let (status, code) = candidate.withCString { pointer in
+                (lstat(pointer, &attributes), errno)
+            }
+            if status == 0 {
+                if attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) { throw VaultError.invalidPath }
+            } else if code != ENOENT {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+        }
+        let file = URL(fileURLWithPath: candidate).standardizedFileURL
+        guard file.path.hasPrefix(rootPath + "/"),
               file.lastPathComponent == summary.id.uuidString + ".json" else { throw VaultError.invalidPath }
         return file
     }

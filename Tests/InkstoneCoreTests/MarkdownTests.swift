@@ -189,4 +189,31 @@ struct MarkdownExtensionTests {
         #expect(document.blocks[0].children[1].callout?.type == "tip")
         #expect(document.togglingTask(at: 6).contains("[x] task"))
     }
+    @Test func twoHorizontalRulesAreNotStrippedAsFrontmatter() {
+        let source = "---\n\n# Heading\n\nBody\n\n---\n\nFooter"
+        let document = MarkdownDocument(source)
+        #expect(document.headings.map(\.title) == ["Heading"])
+        #expect(document.previewText.contains("Body"))
+    }
+    @Test func escapedAndCurrencyDollarsDoNotBreakFollowingInlineMath() {
+        for source in [#"Price is \$5 and $x = 1$"#, "Costs $5 and $x = 1$"] {
+            let document = MarkdownDocument(source)
+            let formulas = document.blocks[0].inline.compactMap { node -> String? in
+                if case .math(let value, false) = node { return value }; return nil
+            }
+            #expect(formulas == ["x = 1"], "\(source)")
+        }
+    }
+    @Test func togglingTaskIgnoresUnicodeLineSeparatorsAndAnchorsCheckbox() {
+        let source = "line1\u{2028}still1\n- [ ] task with [ ] later"
+        let document = MarkdownDocument(source)
+        let toggled = document.togglingTask(at: 1)
+        #expect(toggled == "line1\u{2028}still1\n- [x] task with [ ] later")
+    }
+    @Test func obsidianImageSupportsAltBeforeDimensions() {
+        let ref = ObsidianImageReference("folder/pic.png|cover image|320x200")
+        #expect(ref?.target == "folder/pic.png")
+        #expect(ref?.width == 320)
+        #expect(ref?.height == 200)
+    }
 }

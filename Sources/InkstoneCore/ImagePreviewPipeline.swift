@@ -1,6 +1,9 @@
 import Foundation
 import CoreGraphics
 import ImageIO
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public struct ImageResourceContext: Hashable, Sendable {
     public let library: String
@@ -21,9 +24,21 @@ public struct ImagePreview: @unchecked Sendable {
 }
 
 public actor ImagePreviewPipeline {
-    public static let shared = ImagePreviewPipeline()
+    public static let shared: ImagePreviewPipeline = {
+        let pipeline = ImagePreviewPipeline()
+        #if canImport(UIKit)
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: nil) { _ in
+            Task { await pipeline.clearCache() }
+        }
+        #endif
+        return pipeline
+    }()
     private struct Key: Hashable { let context: ImageResourceContext; let source: String; let pixels: Int }
     private struct Waiter { let id: UUID; let continuation: CheckedContinuation<Void, Error> }
+    private struct InFlightEntry {
+        let task: Task<ImagePreview, Error>
+        var consumers: Int
+    }
     private let concurrency: Int
     private let cacheBudget: Int
     private var active = 0
@@ -31,8 +46,14 @@ public actor ImagePreviewPipeline {
     private var cache: [Key: ImagePreview] = [:]
     private var order: [Key] = []
     private var cacheCost = 0
+    private var inFlight: [Key: InFlightEntry] = [:]
     public init(concurrency: Int = 3, cacheBudget: Int = 64 * 1024 * 1024) {
         self.concurrency = max(1, concurrency); self.cacheBudget = max(0, cacheBudget)
+    }
+    public func clearCache() {
+        cache.removeAll()
+        order.removeAll()
+        cacheCost = 0
     }
     private func acquire() async throws {
         try Task.checkCancellation()
@@ -58,31 +79,17 @@ public actor ImagePreviewPipeline {
         order.removeAll { $0 == key }; order.append(key)
         return result
     }
-    public func preview(source: String, context: ImageResourceContext, maxPixelSize: Int = 1920,
-                        loader: @escaping @Sendable (String) async throws -> Data) async throws -> ImagePreview {
-        let key = Key(context: context, source: source, pixels: max(1, min(1920, maxPixelSize)))
-        try Task.checkCancellation()
-        if let result = cached(key) { return result }
-        try await acquire()
-        defer { release() }
-        try Task.checkCancellation()
-        if let result = cached(key) { return result }
-        let data: Data
-        if ObsidianImageReference(source: source) != nil {
-            data = try await loader(source)
-        } else if let url = URL(string: source), let scheme = url.scheme {
-            guard ["http", "https"].contains(scheme.lowercased()), url.user == nil, url.password == nil else { throw VaultError.invalidPath }
-            data = try await Self.download(url)
-        } else { data = try await loader(source) }
-        guard data.count <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
-        let worker = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            let result = try autoreleasepool { try Self.decode(data, pixels: key.pixels) }
-            try Task.checkCancellation()
-            return result
+    private func detachConsumer(_ key: Key) {
+        guard var entry = inFlight[key] else { return }
+        entry.consumers -= 1
+        if entry.consumers <= 0 {
+            inFlight.removeValue(forKey: key)
+            entry.task.cancel()
+        } else {
+            inFlight[key] = entry
         }
-        let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-        try Task.checkCancellation()
+    }
+    private func store(_ result: ImagePreview, for key: Key) {
         if result.cost <= cacheBudget {
             if let old = cache.removeValue(forKey: key) { cacheCost -= old.cost; order.removeAll { $0 == key } }
             while !order.isEmpty && (cacheCost + result.cost > cacheBudget || order.count >= 128) {
@@ -91,7 +98,56 @@ public actor ImagePreviewPipeline {
             }
             cache[key] = result; order.append(key); cacheCost += result.cost
         }
-        return result
+    }
+    public func preview(source: String, context: ImageResourceContext, maxPixelSize: Int = 1920,
+                        loader: @escaping @Sendable (String) async throws -> Data) async throws -> ImagePreview {
+        let key = Key(context: context, source: source, pixels: max(1, min(1920, maxPixelSize)))
+        try Task.checkCancellation()
+        if let result = cached(key) { return result }
+        let sharedTask: Task<ImagePreview, Error>
+        if var existing = inFlight[key] {
+            existing.consumers += 1
+            inFlight[key] = existing
+            sharedTask = existing.task
+        } else {
+            let task = Task<ImagePreview, Error> {
+                defer { self.finishInFlight(key) }
+                try await self.acquire()
+                defer { self.release() }
+                try Task.checkCancellation()
+                if let result = self.cached(key) { return result }
+                let data: Data
+                if ObsidianImageReference(source: source) != nil {
+                    data = try await loader(source)
+                } else if let url = URL(string: source), let scheme = url.scheme {
+                    guard ["http", "https"].contains(scheme.lowercased()), url.user == nil, url.password == nil else { throw VaultError.invalidPath }
+                    data = try await Self.download(url)
+                } else { data = try await loader(source) }
+                guard data.count <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
+                let worker = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    let result = try autoreleasepool { try Self.decode(data, pixels: key.pixels) }
+                    try Task.checkCancellation()
+                    return result
+                }
+                let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                self.store(result, for: key)
+                return result
+            }
+            inFlight[key] = InFlightEntry(task: task, consumers: 1)
+            sharedTask = task
+        }
+        return try await withTaskCancellationHandler {
+            let value = try await sharedTask.value
+            try Task.checkCancellation()
+            return value
+        } onCancel: {
+            Task { await self.detachConsumer(key) }
+        }
+    }
+    private func finishInFlight(_ key: Key) {
+        inFlight.removeValue(forKey: key)
     }
     private nonisolated static func decode(_ data: Data, pixels: Int) throws -> ImagePreview {
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -100,21 +156,41 @@ public actor ImagePreviewPipeline {
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0, height > 0, width <= 20_000, height <= 20_000,
               Int64(width) * Int64(height) <= 100_000_000,
-              let image = AttachmentThumbnail.make(data: data, maxPixelSize: pixels) else {
+              let image = AttachmentThumbnail.make(source: source, maxPixelSize: pixels) else {
             throw SyncFailure("图片格式无效或像素尺寸超过预览限制。")
         }
         let frames = CGImageSourceGetCount(source)
+        let type = CGImageSourceGetType(source) as String?
         // Keep bounded small animations in WebKit; larger ones use a first-frame preview.
         if frames > 1, max(width, height) <= pixels,
            frames <= 100, Int64(width) * Int64(height) * Int64(frames) <= 20_000_000,
-           let type = CGImageSourceGetType(source) as String?, type == "com.compuserve.gif" {
+           type == "com.compuserve.gif" {
             return ImagePreview(image: image, data: data, mimeType: "image/gif")
         }
+        let orientation = (properties[kCGImagePropertyOrientation] as? Int) ?? 1
+        // Avoid re-encoding already-bounded web-safe static images into huge PNGs.
+        if frames == 1, max(width, height) <= pixels, orientation == 1, let type {
+            let webMime: String?
+            switch type {
+            case "public.jpeg": webMime = "image/jpeg"
+            case "public.png": webMime = "image/png"
+            case "org.webmproject.webp": webMime = "image/webp"
+            default: webMime = nil
+            }
+            if let webMime {
+                return ImagePreview(image: image, data: data, mimeType: webMime)
+            }
+        }
+        let alpha = image.alphaInfo
+        let isOpaque = alpha == .none || alpha == .noneSkipFirst || alpha == .noneSkipLast
+        let uti: CFString = isOpaque ? ("public.jpeg" as CFString) : ("public.png" as CFString)
+        let mimeType = isOpaque ? "image/jpeg" : "image/png"
         let encoded = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(encoded, "public.png" as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(destination, image, nil)
+        guard let destination = CGImageDestinationCreateWithData(encoded, uti, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+        let options: CFDictionary? = isOpaque ? ([kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary) : nil
+        CGImageDestinationAddImage(destination, image, options)
         guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
-        return ImagePreview(image: image, data: encoded as Data, mimeType: "image/png")
+        return ImagePreview(image: image, data: encoded as Data, mimeType: mimeType)
     }
     private static let session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -127,14 +203,20 @@ public actor ImagePreviewPipeline {
         var request = URLRequest(url: url)
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
         let limiter = ImageDownloadLimit()
-        let (file, response) = try await session.download(for: request, delegate: limiter)
+        let file: URL, response: URLResponse
+        do {
+            (file, response) = try await session.download(for: request, delegate: limiter)
+        } catch let error as URLError where error.code == .cancelled && limiter.exceeded {
+            throw VaultError.attachmentTooLarge
+        }
         defer { try? FileManager.default.removeItem(at: file) }
         guard let response = response as? HTTPURLResponse, (200...299).contains(response.statusCode) else { throw URLError(.badServerResponse) }
         let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard !limiter.exceeded, response.expectedContentLength <= 32 * 1024 * 1024, size <= 32 * 1024 * 1024 else { throw VaultError.attachmentTooLarge }
-        guard response.expectedContentLength < 0 || size == response.expectedContentLength else { throw URLError(.networkConnectionLost) }
-        let data = try Data(contentsOf: file, options: .mappedIfSafe)
-        return data
+        let encoding = response.value(forHTTPHeaderField: "Content-Encoding")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let isIdentity = encoding == nil || encoding!.isEmpty || encoding == "identity"
+        guard !isIdentity || response.expectedContentLength < 0 || size == response.expectedContentLength else { throw URLError(.networkConnectionLost) }
+        return try Data(contentsOf: file)
     }
 }
 

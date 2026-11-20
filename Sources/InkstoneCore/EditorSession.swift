@@ -18,7 +18,7 @@ public struct EditorSession: Sendable {
     public var isSaving: Bool { savePhase == .saving }
     public var saveBlocked: Bool { if case .failed = savePhase { return true }; return false }
     public func canNavigate(textIsDirty: Bool) -> Bool {
-        !textIsDirty && !hasPendingSnapshot && !composing && !snapshotComposing && !isSaving && !saveBlocked
+        !textIsDirty && !hasPendingSnapshot && !composing && !snapshotComposing && !transitioning && !isSaving && !saveBlocked
     }
     public mutating func changed(version: Int, composing: Bool) {
         guard version >= editingVersion else { return }
@@ -32,10 +32,10 @@ public struct EditorSession: Sendable {
         snapshotVersion = version; snapshotComposing = composing
         return true
     }
-    public mutating func resetTransportVersions() { editingVersion = 0; snapshotVersion = 0; snapshotComposing = false }
+    public mutating func resetTransportVersions() { editingVersion = 0; snapshotVersion = 0; composing = false; snapshotComposing = false }
     /// Explicit recovery action after a missing/failed WebKit snapshot.
     public mutating func useLastSnapshot() {
-        snapshotFailure = nil; composing = false; savePhase = .idle
+        snapshotFailure = nil; composing = false; transitioning = false; savePhase = .idle
         documentID = UUID() // invalidate messages from the discarded WebKit instance
         resetTransportVersions()
     }

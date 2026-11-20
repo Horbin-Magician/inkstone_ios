@@ -10,11 +10,12 @@ public struct ObsidianImageReference: Sendable {
     public let source: String
 
     public init?(_ content: String) {
-        let parts = content.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
-        let target = parts[0]
-        guard !target.isEmpty, ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif", "svg"].contains((target as NSString).pathExtension.lowercased()) else { return nil }
+        let parts = content.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard let target = parts.first,
+              !target.isEmpty,
+              ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif", "avif", "svg"].contains((target as NSString).pathExtension.lowercased()) else { return nil }
         self.target = target
-        let size = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+        let size = parts.count > 1 ? parts.last!.trimmingCharacters(in: .whitespaces) : ""
         let dimensions = size.split(separator: "x", omittingEmptySubsequences: false)
         let valid = size.range(of: #"^[1-9][0-9]{0,4}(x[1-9][0-9]{0,4})?$"#, options: .regularExpression) != nil
         width = valid ? Int(dimensions[0]) : nil

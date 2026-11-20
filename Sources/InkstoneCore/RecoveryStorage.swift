@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public enum RecoveryStorageCategory: String, CaseIterable, Sendable {
     case history = "正文历史", syncBackup = "同步文件备份", deletedFolder = "已删除文件夹", staging = "同步暂存"
@@ -16,12 +17,24 @@ public struct RecoveryStorageItem: Identifiable, Sendable {
 extension Vault {
     /// Private recovery paths must stay inside the recovery root and never follow links.
     private func storageURL(_ relative: String) throws -> URL {
-        guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.split(separator: "/").contains("..") else { throw VaultError.invalidPath }
-        var file = recovery
+        guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("\\"),
+              !relative.split(separator: "/").contains("..") else { throw VaultError.invalidPath }
+        let rootPath = recovery.path
+        var candidate = rootPath
         for part in relative.split(separator: "/") {
-            file.appendPathComponent(String(part))
-            if fm.fileExists(atPath: file.path), try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true { throw VaultError.invalidPath }
+            candidate += "/" + part
+            var attributes = stat()
+            let (status, code) = candidate.withCString { pointer in
+                (lstat(pointer, &attributes), errno)
+            }
+            if status == 0 {
+                if attributes.st_mode & mode_t(S_IFMT) == mode_t(S_IFLNK) { throw VaultError.invalidPath }
+            } else if code != ENOENT {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
         }
+        let file = URL(fileURLWithPath: candidate).standardizedFileURL
+        guard file.path.hasPrefix(rootPath + "/") else { throw VaultError.invalidPath }
         return file
     }
     private func storageUsage(_ file: URL) throws -> (bytes: Int64, containsLinks: Bool) {
@@ -67,8 +80,10 @@ extension Vault {
                 let protected = fm.fileExists(atPath: state.appendingPathComponent("pending.json").path)
                 let backups = try storageURL(relative + "/backups")
                 if fm.fileExists(atPath: backups.path) {
-                    for name in try fm.contentsOfDirectory(atPath: backups.path).sorted() {
+                    for name in try fm.contentsOfDirectory(atPath: backups.path).sorted() where !name.hasPrefix(".") {
                         let id = relative + "/backups/" + name
+                        let backupDir = try storageURL(id)
+                        guard try backupDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
                         let pathFile = try storageURL(id + "/path.txt")
                         let path = try? String(contentsOf: pathFile, encoding: .utf8)
                         let validPath = path.flatMap { value -> String? in
@@ -87,10 +102,11 @@ extension Vault {
         }
         let deleted = try storageURL(".deleted-folders")
         if fm.fileExists(atPath: deleted.path) {
-            for name in try fm.contentsOfDirectory(atPath: deleted.path).sorted() {
+            for name in try fm.contentsOfDirectory(atPath: deleted.path).sorted() where !name.hasPrefix(".") {
                 let file = try storageURL(".deleted-folders/" + name)
-                let children = try fm.contentsOfDirectory(atPath: file.path).sorted().joined(separator: "、")
-                try append(".deleted-folders/" + name, category: .deletedFolder, path: children, protected: false)
+                guard try file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else { continue }
+                let children = try fm.contentsOfDirectory(atPath: file.path).filter { !$0.hasPrefix(".") }.sorted().joined(separator: "、")
+                try append(".deleted-folders/" + name, category: .deletedFolder, path: children.isEmpty ? name : children, protected: false)
             }
         }
         return items.sorted { $0.date > $1.date }
@@ -101,9 +117,9 @@ extension Vault {
         guard let item = try recoveryStorage().first(where: { $0.id == id }), !item.protected else { throw VaultError.busy }
         let file = try storageURL(id)
         if item.category == .history {
-            let record = try JSONDecoder().decode(RecoveryRecord.self, from: Data(contentsOf: file))
+            let record = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode(RecoveryRecord.self, from: $0) }
             try fm.removeItem(at: file)
-            removeCatalogRecord(record)
+            if let record { removeCatalogRecord(record) }
         } else { try fm.removeItem(at: file) }
     }
     /// Restore into a fresh folder so no existing note or attachment can be replaced.
