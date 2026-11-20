@@ -3,8 +3,12 @@ import CryptoKit
 
 public struct SyncFailure: LocalizedError {
     public let message: String
+    let definitePublishRejection: Bool
     public var errorDescription: String? { message }
-    init(_ message: String) { self.message = message }
+    init(_ message: String, definitePublishRejection: Bool = false) {
+        self.message = message
+        self.definitePublishRejection = definitePublishRejection
+    }
 }
 func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 

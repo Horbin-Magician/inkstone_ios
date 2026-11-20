@@ -56,4 +56,13 @@ enum SyncFile {
         if replaceCache, fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
         try fm.moveItem(at: temporary, to: destination)
     }
+    /// Verify a private temporary file in place and move it atomically into the object cache.
+    static func promoteVerified(_ temporary: URL, to destination: URL, hash: String, cancellable: Bool = true) throws {
+        let fm = FileManager.default
+        guard try Self.hash(temporary, cancellable: cancellable) == hash else {
+            throw SyncFailure("同步文件校验失败。")
+        }
+        if fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+        try fm.moveItem(at: temporary, to: destination)
+    }
 }

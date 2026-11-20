@@ -105,14 +105,15 @@ extension SyncPathTests {
         let remote = MemoryRemote()
         await remote.set(["old.md": Data("old".utf8)])
         _ = try await vault.synchronize(remote: remote)
+        _ = try await vault.create(path: "local.md", text: "local")
         await remote.set(["new.md": Data("new".utf8)])
         await remote.loseNextPublishResponse()
         await #expect(throws: SyncFailure.self) { _ = try await vault.synchronize(remote: remote) }
-        #expect(try String(contentsOf: root.appendingPathComponent("old.md"), encoding: .utf8) == "old")
+        #expect(Set(try await vault.scan().notes.map(\.path)) == ["old.md", "local.md"])
         let restarted = try Vault(root: root, recovery: recovery)
         _ = try await restarted.synchronize(remote: remote)
-        #expect(try await restarted.scan().notes.map(\.path) == ["new.md"])
-        #expect(await remote.value.files == ["new.md": digest(Data("new".utf8))])
+        #expect(Set(try await restarted.scan().notes.map(\.path)) == ["new.md", "local.md"])
+        #expect(await remote.value.files == ["new.md": digest(Data("new".utf8)), "local.md": digest(Data("local".utf8))])
     }
 }
 
@@ -154,5 +155,77 @@ extension SyncPathTests {
         _ = try await restarted.synchronize(remote: remote)
         #expect(Set(try await restarted.scan().notes.map(\.path)) == ["local.md", "remote.md"])
         #expect(Set(await remote.value.files.keys) == ["local.md", "remote.md"])
+    }
+
+    @Test func concurrentRemoteChangeDuringRejectedPublishDoesNotDeadlock() async throws {
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let remote = MemoryRemote()
+        await remote.set(["shared.md": Data("v1".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        _ = try await vault.save(path: "shared.md", text: "local-v2", expected: "v1")
+        await remote.reject()
+        await #expect(throws: SyncFailure.self) { _ = try await vault.synchronize(remote: remote) }
+        // Another device publishes while our unpublished pending.json is still on disk.
+        await remote.acceptPublishes()
+        await remote.set(["shared.md": Data("remote-v2".utf8), "other.md": Data("other".utf8)])
+        let report = try await vault.synchronize(remote: remote)
+        #expect(report.conflicts == ["shared.md"])
+        let texts = Set(try await vault.scan().notes.map(\.text))
+        #expect(texts.contains("local-v2"))
+        #expect(texts.contains("remote-v2"))
+        #expect(texts.contains("other"))
+    }
+
+    @Test func pureDownloadSkipsPrepareAndPublish() async throws {
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let remote = MemoryRemote()
+        await remote.set(["a.md": Data("v1".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        let preparesBefore = await remote.prepareCount
+        let revisionBefore = await remote.revision
+        await remote.set(["a.md": Data("v2".utf8), "b.md": Data("b".utf8)])
+        let revisionAfterSet = await remote.revision
+        let report = try await vault.synchronize(remote: remote)
+        #expect(report.downloaded == 2 && report.uploaded == 0)
+        #expect(await remote.prepareCount == preparesBefore)
+        #expect(await remote.revision == revisionAfterSet)
+        #expect(revisionAfterSet != revisionBefore)
+    }
+
+    @Test func directoryWithEmptySubdirectoryCanBecomeFile() async throws {
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        let remote = MemoryRemote()
+        await remote.set(["folder/a.md": Data("old".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        try await vault.createFolder(path: "folder/empty-sub")
+        await remote.set(["folder": Data("file-now".utf8)])
+        _ = try await vault.synchronize(remote: remote)
+        #expect(try String(contentsOf: root.appendingPathComponent("folder"), encoding: .utf8) == "file-now")
+    }
+
+    @Test func caseOnlyRenameSucceedsAndFailedFolderTrashLeavesNoOrphanBackup() async throws {
+        let base = temporaryRoot.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("vault"), recovery = base.appendingPathComponent("recovery")
+        let vault = try Vault(root: root, recovery: recovery)
+        _ = try await vault.create(path: "Note.md", text: "hello")
+        try await vault.move(path: "Note.md", to: "note.md")
+        #expect(try await vault.scan().notes.map(\.path) == ["note.md"])
+        try await vault.createFolder(path: "bad-folder")
+        try Data([0xFF, 0xFE, 0x00]).write(to: root.appendingPathComponent("bad-folder/invalid.md"))
+        await #expect(throws: VaultError.self) { try await vault.trashFolder(path: "bad-folder") }
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("bad-folder").path))
+        let deletedFolders = recovery.appendingPathComponent(".deleted-folders")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: deletedFolders.path)) ?? []
+        #expect(leftovers.isEmpty)
     }
 }

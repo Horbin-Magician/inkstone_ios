@@ -11,13 +11,20 @@ public struct AutoSyncSchedule: Sendable {
 
     public init(now: Date = Date()) { nextAttempt = now.addingTimeInterval(3) }
 
+    private mutating func clampWallClockSkew(now: Date) {
+        if let last = lastAttempt, last > now { lastAttempt = now }
+        if let retry = retryAfter, retry > now.addingTimeInterval(900) { retryAfter = now.addingTimeInterval(900) }
+    }
+
     public mutating func requestChange(now: Date = Date()) {
+        clampWallClockSkew(now: now)
         unchangedChecks = 0
         // Coalesce a burst of writes into one transfer.
         nextAttempt = now.addingTimeInterval(3)
     }
 
     public mutating func requestForeground(now: Date = Date()) {
+        clampWallClockSkew(now: now)
         unchangedChecks = 0
         nextAttempt = min(nextAttempt, now.addingTimeInterval(3))
     }
