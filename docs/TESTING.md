@@ -170,3 +170,12 @@
 - `cd RichEditor && npx playwright test --workers=4`：51 项通过，2 项原有测试跳过。新增 WebKit 验证包括离线资源请求、公式点击编辑和撤销、着色代码编辑、图表生成／错误回退、Callout 折叠、键入语法转换和阅读片段高度回传。手机宽度截图已检查。
 - iOS Simulator Debug 无签名构建通过。本机 WKWebView 使用 `loadFileURL` 加载实际打包资源，公式、字体、Swift 高亮、Mermaid SVG 与高度计算通过；不依赖 HTTP 测试服务器或 CDN。
 - 尚未完成真机输入法、VoiceOver 和长篇含大量图表笔记的性能验收。
+
+## 2026-11-20 TestFlight 0.1.0（9）发布
+
+- 基于源码提交 `87220e1`，主应用和分享扩展的构建号统一升至 9，工程生成器同步更新。
+- 146 项 Swift 核心测试、37 项编辑器模型测试、51 项 WebKit 测试通过（2 项按需基准跳过）；plist/entitlements 检查与工程重复生成三次字节一致验证通过。
+- iOS Release 签名归档成功；`codesign --verify --deep --strict` 通过；主应用及扩展均验证版本 0.1.0、构建号 9 和 `group.com.inkstone.mobile` 权限。
+- 北京时间 17:49:46 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。
+- 尚未确认 Apple 处理完成、测试组可下载或外部测试审核状态；未进行 App Store 正式版提审。
+- 归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-9/`。真机输入法、键盘工具栏交互、文件提供商与真实 WebDAV 验收仍需执行。

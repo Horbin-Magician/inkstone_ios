@@ -168,3 +168,5 @@ Swift Package 还会编译 `InkstonePreview`，用于在 macOS SDK 下检查共�
 2026-11-09：0.1.0（7）已完成签名归档并成功上传 App Store Connect；前两次因 TLS 连接错误失败，第三次于北京时间 22:00 收到 `Upload succeeded` / `EXPORT SUCCEEDED` 回执，构建进入 Apple 处理阶段。本版包含 Obsidian 图片嵌入与根目录路径、离线数学公式和 Mermaid 图表、代码语法高亮、Callout，以及窄屏表格布局修复。130 项核心测试、31 项编辑器模型测试、51 项 WebKit 测试通过（2 项跳过）。主应用和分享扩展构建号均为 7，签名及 App Group 权限验证通过。尚未确认 TestFlight 测试组可下载状态。基于源码提交 `e2b9567`；归档、各次上传日志和测试重点位于 `.build/releases/testflight-0.1.0-7/`。
 
 2026-11-12：TestFlight 0.1.0（8）于北京时间 10:17 成功上传 App Store Connect。Apple 已接收构建并开始处理，测试组可下载状态待确认。本版基于 `19db83e`，优化了笔记库启动、编辑、同步和备份。主应用与分享扩展构建号均为 8。归档、测试重点和上传回执位于 `.build/releases/testflight-0.1.0-8/`。
+
+2026-11-20：TestFlight 0.1.0（9）于北京时间 17:49 成功上传 App Store Connect，收到 `Upload succeeded` / `EXPORT SUCCEEDED` 回执并进入 Apple 处理阶段，测试组可下载状态待确认。本版基于 `87220e1`，新增富文本与源码模式的原生 iOS 键盘上方横向滚动工具栏，修复同步发布死锁/外部修改竞态、保存与导航竞态、批量移动至根目录失效、Markdown 往返保真与深色模式适配，并裁剪冗余字体资源、优化图片与代码高亮性能。146 项核心测试、37 项编辑器模型测试、51 项 WebKit 测试通过（2 项跳过），主应用与分享扩展构建号均为 9，签名及 `group.com.inkstone.mobile` 权限验证通过。归档、测试重点和上传回执位于 `.build/releases/testflight-0.1.0-9/`。
