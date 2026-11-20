@@ -179,3 +179,12 @@
 - 北京时间 17:49:46 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。
 - 尚未确认 Apple 处理完成、测试组可下载或外部测试审核状态；未进行 App Store 正式版提审。
 - 归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-9/`。真机输入法、键盘工具栏交互、文件提供商与真实 WebDAV 验收仍需执行。
+
+## 2026-11-20 TestFlight 0.1.0（10）发布
+
+- 基于源码提交 `26b8481`，修复 `EditorSession.canNavigate(textIsDirty:)` 在 `transitioning == true` 时始终返回 `false` 导致打开笔记后无法返回、切换笔记或创建双链目标笔记的问题，主应用和分享扩展的构建号统一升至 10，工程生成器同步更新。
+- 147 项 Swift 核心测试通过（含新增回归测试 `activeTransitionAllowsNavigationOnceClean()`）；plist/entitlements 检查与工程重复生成三次字节一致验证通过。
+- iOS Release 签名归档成功；`codesign --verify --deep --strict` 通过；主应用及扩展均验证版本 0.1.0、构建号 10 和 `group.com.inkstone.mobile` 权限。
+- 北京时间 22:10:32 上传成功，Xcode 返回 `Uploaded package is processing`、`Upload succeeded`、`EXPORT SUCCEEDED`。
+- 尚未确认 Apple 处理完成、测试组可下载或外部测试审核状态；未进行 App Store 正式版提审。
+- 归档、上传日志和测试重点位于 `.build/releases/testflight-0.1.0-10/`。真机返回/切换笔记、输入法、键盘工具栏交互、文件提供商与真实 WebDAV 验收仍需执行。
