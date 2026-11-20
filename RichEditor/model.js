@@ -41,11 +41,39 @@ export const schema = new Schema({nodes, marks});
 
 const tokenizer = new MarkdownIt('default', {html: true, linkify: false, typographer: false}).use(markdownExtensions);
 export function obsidianImage(content) {
-  const [target, size = ''] = content.split('|', 2);
+  const parts = content.split('|');
+  const target = parts[0] || '';
+  const size = parts.length > 1 ? parts.at(-1) : '';
   if (!/\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif|avif|svg)$/i.test(target)) return null;
   const dimensions = /^([1-9][0-9]{0,4})(?:x([1-9][0-9]{0,4}))?$/.exec(size.trim());
   return {target, width: dimensions?.[1], height: dimensions?.[2]};
 }
+tokenizer.inline.ruler.before('link', 'footnote_ref', (state, silent) => {
+  if (state.src.slice(state.pos, state.pos + 2) !== '[^') return false;
+  const match = /^\[\^([^\]\s\n]+)\](?!:)/.exec(state.src.slice(state.pos));
+  if (!match) return false;
+  if (!silent) { const token = state.push('raw_inline', '', 0); token.content = match[0]; }
+  state.pos += match[0].length;
+  return true;
+});
+tokenizer.block.ruler.before('reference', 'footnote_def', (state, start, end, silent) => {
+  const startPos = state.bMarks[start] + state.tShift[start];
+  const line = state.src.slice(startPos, state.eMarks[start]);
+  if (state.sCount[start] - state.blkIndent >= 4 || !/^\[\^([^\]\s\n]+)\]:/.test(line)) return false;
+  if (silent) return true;
+  let next = start + 1;
+  while (next < end) {
+    if (state.isEmpty(next)) break;
+    if (state.sCount[next] - state.blkIndent < 2 && /^\[\^([^\]\s\n]+)\]:/.test(state.src.slice(state.bMarks[next] + state.tShift[next], state.eMarks[next]))) break;
+    if (state.sCount[next] - state.blkIndent < 2) break;
+    next++;
+  }
+  const token = state.push('html_block', '', 0);
+  token.content = state.getLines(start, next, state.blkIndent, true);
+  token.map = [start, next];
+  state.line = next;
+  return true;
+});
 tokenizer.inline.ruler.before('image', 'obsidian_image', (state, silent) => {
   const match = /^!\[\[([^\]\n]+)\]\]/.exec(state.src.slice(state.pos));
   if (!match) return false;
@@ -98,9 +126,26 @@ const parser = new MarkdownParser(schema, {parse: (_source, environment) => envi
   th: {block: 'table_header', getAttrs: cellAttrs}, td: {block: 'table_cell', getAttrs: cellAttrs},
   html_block: {node: 'raw_block', getAttrs: token => ({source: token.content})},
   html_inline: {node: 'raw_inline', getAttrs: token => ({source: token.content})},
+  table_br: {node: 'hard_break'},
   obsidian_image: {node: 'image', getAttrs: token => token.meta},
   raw_inline: {node: 'raw_inline', getAttrs: token => ({source: token.content})},
   wiki: {node: 'wiki', getAttrs: token => token.meta}
+});
+// Convert <br> inside Markdown table cells into ProseMirror hard_break nodes.
+tokenizer.core.ruler.after('inline', 'table_breaks', state => {
+  let inCell = false;
+  for (const token of state.tokens) {
+    if (token.type === 'th_open' || token.type === 'td_open') inCell = true;
+    else if (token.type === 'th_close' || token.type === 'td_close') inCell = false;
+    else if (inCell && token.type === 'inline' && token.children) {
+      for (const child of token.children) {
+        if (child.type === 'html_inline' && /^<br\s*\/?>$/i.test(child.content.trim())) {
+          child.type = 'table_br';
+          child.content = '';
+        }
+      }
+    }
+  }
 });
 // Markdown table cells have inline tokens rather than explicit paragraphs.
 for (const name of ['th', 'td']) {
@@ -112,7 +157,14 @@ for (const name of ['th', 'td']) {
 export const serializer = new MarkdownSerializer({
   ...defaultMarkdownSerializer.nodes,
   math_inline(state, node) { state.write('$' + node.textContent + '$'); },
-  math_block(state, node) { state.write('$$\n' + node.textContent + '\n$$'); state.closeBlock(node); },
+  math_block(state, node) {
+    state.write('$$');
+    state.ensureNewLine();
+    state.text(node.textContent, false);
+    state.ensureNewLine();
+    state.write('$$');
+    state.closeBlock(node);
+  },
   blockquote(state, node) {
     if (!node.attrs.callout) return defaultMarkdownSerializer.nodes.blockquote(state, node);
     const {type, fold, title} = node.attrs.callout;
@@ -129,7 +181,7 @@ export const serializer = new MarkdownSerializer({
     if (node.attrs.checked != null) state.write(node.attrs.checked ? '[x] ' : '[ ] ');
     state.renderContent(node);
   },
-  raw_block(state, node) { state.write(node.attrs.source); state.closeBlock(node); },
+  raw_block(state, node) { state.text(node.attrs.source, false); state.closeBlock(node); },
   raw_inline(state, node) { state.write(node.attrs.source); },
   wiki(state, node) { state.write('[[' + node.attrs.target + (node.attrs.label === node.attrs.target ? '' : '|' + node.attrs.label) + ']]'); },
   table(state, node) {
@@ -139,7 +191,8 @@ export const serializer = new MarkdownSerializer({
       row.forEach(cell => {
         let value = serializer.serialize(schema.nodes.doc.create(null, cell.content));
         // Pipes are structural even inside inline code in a GFM table.
-        value = value.replace(/\\\|/g, '|').replace(/\|/g, '\\|').replace(/\n+/g, '<br>');
+        // Convert ProseMirror hard_break (`\\\n`) and paragraph breaks into `<br>`.
+        value = value.replace(/\|/g, '\\|').replace(/\\\n/g, '<br>').replace(/\n+/g, '<br>');
         cells.push(value);
       });
       rows.push('| ' + cells.join(' | ') + ' |');
@@ -154,18 +207,40 @@ export const serializer = new MarkdownSerializer({
 
 function raw(source, label) { return schema.nodes.raw_block.create({source, label}); }
 
+function looksLikeFrontmatter(body) {
+  if (!body.length) return true;
+  let sawKey = false;
+  for (const line of body) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (/^[ \t]/.test(line) || trimmed === '-' || trimmed.startsWith('- ')) {
+      if (!sawKey) return false;
+      continue;
+    }
+    if (/^[^\s#:][^:\n]*:(?:[ \t]|$)/.test(line)) {
+      sawKey = true;
+      continue;
+    }
+    return false;
+  }
+  return sawKey;
+}
+
 /** Retain exact source for untouched top-level blocks, plus non-rendered metadata
  * and reference definitions. Editing one paragraph cannot rewrite the whole file. */
 export function loadMarkdown(source) {
   const lines = source.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g).filter(Boolean);
   const clean = lines.map(line => line.replace(/[\r\n]+$/, ''));
   let frontmatterEnd = 0;
-  if (clean[0]?.trim() === '---') {
+  const firstClean = (clean[0] || '').replace(/^\uFEFF/, '');
+  if (firstClean.trim() === '---') {
     const end = clean.findIndex((line, i) => i > 0 && ['---', '...'].includes(line.trim()));
-    if (end > 0) frontmatterEnd = end + 1;
+    if (end > 0 && looksLikeFrontmatter(clean.slice(1, end))) frontmatterEnd = end + 1;
   }
   const parseSource = clean.map((line, i) => i < frontmatterEnd ? '' : line).join('\n');
-  const tokens = tokenizer.parse(parseSource, {});
+  const parseEnv = {};
+  const tokens = tokenizer.parse(parseSource, parseEnv);
+  const hasReferences = Object.keys(parseEnv.references || {}).length > 0;
   const ranges = tokens.filter(token => token.level === 0 && token.nesting >= 0 && token.map).map(token => token.map);
   const parsed = parser.parse(parseSource, {tokens});
   const content = [], originals = new Map();
@@ -190,7 +265,7 @@ export function loadMarkdown(source) {
       const original = lines.slice(start, end).join('');
       const newline = original.match(/(?:\r\n|\r|\n)$/)?.[0] || '';
       let node = parsed.child(index);
-      if (original.includes(':') && ['blockquote', 'bullet_list', 'ordered_list'].includes(node.type.name)) {
+      if (hasReferences && original.includes(':') && ['blockquote', 'bullet_list', 'ordered_list'].includes(node.type.name)) {
         // Reference definitions are consumed by Markdown-it without producing nodes.
         // Serializing an edited container would silently discard them. Keep the
         // complete container as an immutable source atom until lossless editing exists.
@@ -232,9 +307,13 @@ export function saveMarkdown(doc, loaded) {
       }
       cache.set(node, part);
     }
-    // A removed/inserted paragraph still needs a block boundary.
-    if (index && hasContent && part && !tail.replace(/\r\n/g, '\n').replace(/\r/g, '\n').endsWith('\n\n')) {
-      part = (/[\r\n]$/.test(tail) ? loaded.newline : loaded.newline + loaded.newline) + part;
+    // A removed/inserted paragraph still needs a block boundary without doubling
+    // blank lines that already belong to the leading edge of a raw_block gap.
+    if (index && hasContent && part) {
+      const boundary = (tail + part.slice(0, 4)).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      if (!boundary.includes('\n\n')) {
+        part = (/[\r\n]$/.test(tail) || /^[\r\n]/.test(part) ? loaded.newline : loaded.newline + loaded.newline) + part;
+      }
     }
     parts.push(part);
     if (part) { tail = (tail + part.slice(-4)).slice(-4); hasContent = true; }

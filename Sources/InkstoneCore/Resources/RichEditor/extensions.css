@@ -12,8 +12,26 @@
 button.callout-title::before { content: '▸ '; } button.callout-title[aria-expanded=true]::before { content: '▾ '; }
 [hidden] { display: none !important; }
 @media (prefers-color-scheme: dark) {
-.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: #d998e6; } .hljs-string, .hljs-regexp { color: #98cf9b; }
-.hljs-number, .hljs-symbol { color: #e7ad7b; } .hljs-title, .hljs-function, .hljs-type, .hljs-built_in { color: #8dc8f5; }
-.hljs-comment, .hljs-quote { color: #a0aaa4; } .hljs-attr, .hljs-attribute { color: #d7bd85; }
-.callout { --callout-color: #6fbee6; } .callout.amber { --callout-color: #e7b75e; } .callout.red { --callout-color: #ed9494; } .callout.green { --callout-color: #78d2a7; }
+html:not([data-theme="light"]) .hljs-keyword, html:not([data-theme="light"]) .hljs-selector-tag, html:not([data-theme="light"]) .hljs-literal { color: #d998e6; }
+html:not([data-theme="light"]) .hljs-string, html:not([data-theme="light"]) .hljs-regexp { color: #98cf9b; }
+html:not([data-theme="light"]) .hljs-number, html:not([data-theme="light"]) .hljs-symbol { color: #e7ad7b; }
+html:not([data-theme="light"]) .hljs-title, html:not([data-theme="light"]) .hljs-function, html:not([data-theme="light"]) .hljs-type, html:not([data-theme="light"]) .hljs-built_in { color: #8dc8f5; }
+html:not([data-theme="light"]) .hljs-comment, html:not([data-theme="light"]) .hljs-quote { color: #a0aaa4; }
+html:not([data-theme="light"]) .hljs-attr, html:not([data-theme="light"]) .hljs-attribute { color: #d7bd85; }
+html:not([data-theme="light"]) .callout { --callout-color: #6fbee6; }
+html:not([data-theme="light"]) .callout.amber { --callout-color: #e7b75e; }
+html:not([data-theme="light"]) .callout.red { --callout-color: #ed9494; }
+html:not([data-theme="light"]) .callout.green { --callout-color: #78d2a7; }
+html:not([data-theme="light"]) .render-error { color: #f08080; }
 }
+html[data-theme="dark"] .hljs-keyword, html[data-theme="dark"] .hljs-selector-tag, html[data-theme="dark"] .hljs-literal { color: #d998e6; }
+html[data-theme="dark"] .hljs-string, html[data-theme="dark"] .hljs-regexp { color: #98cf9b; }
+html[data-theme="dark"] .hljs-number, html[data-theme="dark"] .hljs-symbol { color: #e7ad7b; }
+html[data-theme="dark"] .hljs-title, html[data-theme="dark"] .hljs-function, html[data-theme="dark"] .hljs-type, html[data-theme="dark"] .hljs-built_in { color: #8dc8f5; }
+html[data-theme="dark"] .hljs-comment, html[data-theme="dark"] .hljs-quote { color: #a0aaa4; }
+html[data-theme="dark"] .hljs-attr, html[data-theme="dark"] .hljs-attribute { color: #d7bd85; }
+html[data-theme="dark"] .callout { --callout-color: #6fbee6; }
+html[data-theme="dark"] .callout.amber { --callout-color: #e7b75e; }
+html[data-theme="dark"] .callout.red { --callout-color: #ed9494; }
+html[data-theme="dark"] .callout.green { --callout-color: #78d2a7; }
+html[data-theme="dark"] .render-error { color: #f08080; }

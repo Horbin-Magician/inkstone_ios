@@ -2,6 +2,13 @@ import {Plugin, TextSelection} from 'prosemirror-state';
 import {Decoration, DecorationSet} from 'prosemirror-view';
 import {renderMath, renderDiagram, highlighted, languageName, calloutColor} from './rendering.js';
 
+function isDarkTheme() {
+  const theme = document.documentElement.dataset.theme;
+  if (theme === 'dark') return true;
+  if (theme === 'light') return false;
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches || false;
+}
+
 function mathView(node, view, getPos) {
   const display = node.type.name === 'math_block';
   const dom = document.createElement(display ? 'div' : 'span'); dom.className = display ? 'math-block math-node' : 'math-inline math-node';
@@ -12,10 +19,22 @@ function mathView(node, view, getPos) {
     const pos = getPos(); if (typeof pos !== 'number' || !view.editable) return;
     event.preventDefault(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 1))); view.focus();
   });
-  const render = node => { preview.classList.remove('render-error'); renderMath(preview, node.textContent, display); };
+  const render = current => {
+    preview.classList.remove('render-error');
+    if (!current.textContent.trim()) {
+      preview.textContent = display ? '公式（点击编辑）' : '公式';
+      return;
+    }
+    renderMath(preview, current.textContent, display);
+  };
   render(node);
-  return {dom, contentDOM, update(next) { if (next.type !== node.type) return false; node = next; render(next); return true; },
-    ignoreMutation: event => event.type !== 'selection' && !contentDOM.contains(event.target) && event.target !== contentDOM};
+  return {dom, contentDOM, update(next) {
+    if (next.type !== node.type) return false;
+    const changed = next.textContent !== node.textContent;
+    node = next;
+    if (changed) render(next);
+    return true;
+  }, ignoreMutation: event => event.type !== 'selection' && !contentDOM.contains(event.target) && event.target !== contentDOM};
 }
 function codeView(node) {
   const dom = document.createElement('div'); dom.className = 'code-node';
@@ -27,14 +46,14 @@ function codeView(node) {
     preview.hidden = !['mermaid', 'math', 'latex', 'tex'].includes(language);
     const current = ++version; clearTimeout(timer);
     if (['math', 'latex', 'tex'].includes(language)) renderMath(preview, next.textContent, true);
-    if (language === 'mermaid') timer = setTimeout(() => renderDiagram(preview, next.textContent, () => current === version), 200);
+    if (language === 'mermaid') timer = setTimeout(() => renderDiagram(preview, next.textContent, () => current === version, isDarkTheme()), 200);
   }
   render(node);
   return {dom, contentDOM, update(next) { if (next.type !== node.type) return false; if (!next.eq(node)) render(next); node = next; return true; },
     destroy() { version++; clearTimeout(timer); },
     ignoreMutation: event => event.type !== 'selection' && !contentDOM.contains(event.target) && event.target !== contentDOM};
 }
-function quoteView(node) {
+function quoteView(node, view, getPos) {
   const callout = node.attrs.callout;
   const dom = document.createElement(callout ? 'aside' : 'blockquote');
   const contentDOM = document.createElement('div');
@@ -43,7 +62,10 @@ function quoteView(node) {
     const header = document.createElement(callout.fold ? 'button' : 'div'); header.className = 'callout-title'; header.contentEditable = 'false';
     header.textContent = callout.title; dom.append(header);
     if (callout.fold) {
-      contentDOM.hidden = callout.fold === '-'; header.setAttribute('aria-expanded', String(!contentDOM.hidden));
+      const pos = typeof getPos === 'function' ? getPos() : null;
+      const selectionInside = typeof pos === 'number' && view?.state.selection.from >= pos && view?.state.selection.to <= pos + node.nodeSize;
+      contentDOM.hidden = callout.fold === '-' && !selectionInside;
+      header.setAttribute('aria-expanded', String(!contentDOM.hidden));
       header.onclick = () => { contentDOM.hidden = !contentDOM.hidden; header.setAttribute('aria-expanded', String(!contentDOM.hidden)); };
     }
   }
@@ -65,19 +87,60 @@ function codeSpans(node) {
   }
   walk(root); highlights.set(node, spans); return spans;
 }
+function buildCodeDecorations(doc) {
+  const decorations = [];
+  doc.descendants((node, pos) => {
+    if (node.type.name === 'code_block') {
+      for (const [from, to, classes] of codeSpans(node)) decorations.push(Decoration.inline(pos + 1 + from, pos + 1 + to, {class: classes}));
+      return false;
+    }
+  });
+  return DecorationSet.create(doc, decorations);
+}
+function editingMathDecoration(state) {
+  const {$from, $to} = state.selection;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const node = $from.node(depth);
+    if (node.type.name === 'math_inline' || node.type.name === 'math_block') {
+      const pos = $from.before(depth);
+      if ($to.pos <= pos + node.nodeSize) {
+        return Decoration.node(pos, pos + node.nodeSize, {class: 'editing-math'});
+      }
+      break;
+    }
+  }
+  return null;
+}
 export function extensionDecorations() {
-  return new Plugin({props: {decorations(state) {
-    const decorations = [];
-    state.doc.descendants((node, pos) => {
-      if (node.type.name === 'code_block') {
-        for (const [from, to, classes] of codeSpans(node)) decorations.push(Decoration.inline(pos + 1 + from, pos + 1 + to, {class: classes}));
-        return false;
+  return new Plugin({
+    state: {
+      init(_, state) {
+        return {code: buildCodeDecorations(state.doc)};
+      },
+      apply(tr, value, _oldState, newState) {
+        if (!tr.docChanged) return value;
+        // Recompute only when a code_block was touched; otherwise map existing decorations.
+        let codeTouched = false;
+        let hasCode = false;
+        newState.doc.descendants(node => {
+          if (node.type.name === 'code_block') {
+            hasCode = true;
+            if (!highlights.has(node)) codeTouched = true;
+            return false;
+          }
+        });
+        if (!hasCode) return {code: DecorationSet.empty};
+        if (codeTouched) return {code: buildCodeDecorations(newState.doc)};
+        return {code: value.code.map(tr.mapping, newState.doc)};
       }
-      if (/^math_/.test(node.type.name)) {
-        if (state.selection.from > pos && state.selection.to < pos + node.nodeSize) decorations.push(Decoration.node(pos, pos + node.nodeSize, {class: 'editing-math'}));
-        return false;
+    },
+    props: {
+      decorations(state) {
+        const pluginState = this.getState(state);
+        const mathDeco = editingMathDecoration(state);
+        if (!mathDeco) return pluginState.code;
+        return pluginState.code.add(state.doc, [mathDeco]);
       }
-    });
-    return DecorationSet.create(state.doc, decorations);
-  }}});
+    }
+  });
 }

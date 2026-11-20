@@ -9,19 +9,22 @@ root.addEventListener('click', event => {
   const link = event.target.closest('a');
   if (!link) return;
   event.preventDefault();
-  window.webkit?.messageHandlers.renderHeight.postMessage({revision, href: link.getAttribute('href')});
+  const href = link.getAttribute('href');
+  if (!href) return;
+  window.webkit?.messageHandlers.renderHeight.postMessage({revision, href});
 });
 window.renderFragment = async payload => {
   const current = revision = payload.revision;
   document.documentElement.style.fontSize = payload.fontSize + 'px';
   document.documentElement.style.colorScheme = payload.dark ? 'dark' : 'light';
+  document.documentElement.dataset.theme = payload.dark ? 'dark' : 'light';
   document.body.style.color = payload.dark ? '#eee' : '#202423';
   if (payload.kind === 'code') {
     const language = languageName(payload.language);
     root.replaceChildren();
     if (language === 'mermaid') {
       const diagram = document.createElement('div'); diagram.className = 'diagram-preview'; root.append(diagram);
-      await renderDiagram(diagram, payload.source, () => current === revision);
+      await renderDiagram(diagram, payload.source, () => current === revision, !!payload.dark);
     } else if (['math', 'latex', 'tex'].includes(language)) {
       const math = document.createElement('div'); root.append(math); renderMath(math, payload.source, true);
     } else {

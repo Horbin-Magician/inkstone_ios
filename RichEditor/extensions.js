@@ -34,14 +34,20 @@ export function markdownExtensions(md) {
     state.line = next; return true;
   }, {alt: ['paragraph', 'reference', 'blockquote', 'list']});
   md.core.ruler.after('inline', 'callouts', state => {
-    state.tokens.forEach((token, index, tokens) => {
-      if (token.type !== 'blockquote_open' || tokens[index + 1]?.type !== 'paragraph_open') return;
+    const tokens = state.tokens;
+    for (let index = 0; index < tokens.length; index++) {
+      const token = tokens[index];
+      if (token.type !== 'blockquote_open' || tokens[index + 1]?.type !== 'paragraph_open') continue;
       const inline = tokens[index + 2];
       const match = /^\[!([\w-]+)\]([+-])?(?:[ \t]+([^\n]*))?(?:\n|$)/.exec(inline?.content || '');
-      if (!match) return;
+      if (!match) continue;
       token.meta = {...token.meta, callout: {type: match[1].toLowerCase(), fold: match[2] || '', title: match[3] || match[1].toUpperCase()}};
       inline.content = inline.content.slice(match[0].length);
-      inline.children = []; state.md.inline.parse(inline.content, state.md, state.env, inline.children);
-    });
+      if (!inline.content && tokens[index + 3]?.type === 'paragraph_close' && tokens[index + 4]?.type !== 'blockquote_close') {
+        tokens.splice(index + 1, 3);
+      } else {
+        inline.children = []; state.md.inline.parse(inline.content, state.md, state.env, inline.children);
+      }
+    }
   });
 }

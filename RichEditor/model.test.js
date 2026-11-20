@@ -171,3 +171,48 @@ test('editing a paragraph does not turn escaped dollar text into math', () => {
   assert.deepEqual(formulas, ['y']);
   assert.ok(reopened.doc.textContent.includes('literal $x$'));
 });
+test('math_block inside blockquote retains container prefix when edited', () => {
+  const source = '> $$\n> x^2\n> $$\n';
+  const loaded = loadMarkdown(source);
+  const state = EditorState.create({doc: loaded.doc});
+  const edited = state.apply(state.tr.insertText('+1', 5));
+  const saved = saveMarkdown(edited.doc, loaded);
+  assert.equal(saved, '> $$\n> x^2+1\n> $$\n');
+});
+test('two horizontal rules are not treated as uneditable frontmatter', () => {
+  const source = '---\n\n# Heading\n\nBody\n\n---\n\nFooter\n';
+  const loaded = loadMarkdown(source);
+  assert.equal(loaded.doc.child(0).type.name, 'horizontal_rule');
+  assert.equal(loaded.doc.child(1).type.name, 'heading');
+  assert.equal(saveMarkdown(loaded.doc, loaded), source);
+});
+test('table cell preserves hard breaks and escaped backslashes before pipes', () => {
+  const source = '| Col |\n| --- |\n| a\\\\\\|b<br>line2 |\n';
+  const loaded = loadMarkdown(source);
+  const state = EditorState.create({doc: loaded.doc});
+  const cell = loaded.doc.firstChild.child(1).firstChild;
+  assert.ok(cell.textContent.includes('a\\|b'));
+  const saved = serializer.serialize(loaded.doc);
+  assert.ok(saved.includes('a\\\\\\|b<br>line2'));
+  assert.ok(!saved.includes('\\<br>'));
+});
+test('editing before a reference definition does not inject triple newlines', () => {
+  const source = 'para1\n\n[ref]: https://example.com\n\npara2\n';
+  const loaded = loadMarkdown(source);
+  const state = EditorState.create({doc: loaded.doc});
+  const saved = saveMarkdown(state.apply(state.tr.insertText('X', 1)).doc, loaded);
+  assert.equal(saved, 'Xpara1\n\n[ref]: https://example.com\n\npara2\n');
+});
+test('callout followed directly by a list has no phantom empty paragraph', () => {
+  const source = '> [!TIP]\n> - item 1\n';
+  const loaded = loadMarkdown(source);
+  assert.equal(loaded.doc.firstChild.childCount, 1);
+  assert.equal(loaded.doc.firstChild.firstChild.type.name, 'bullet_list');
+});
+test('footnotes stay intact when surrounding paragraph is edited', () => {
+  const source = 'Text[^1]\n\n[^1]: Footnote body.\n';
+  const loaded = loadMarkdown(source);
+  const state = EditorState.create({doc: loaded.doc});
+  const saved = saveMarkdown(state.apply(state.tr.insertText('Edited ', 1)).doc, loaded);
+  assert.equal(saved, 'Edited Text[^1]\n\n[^1]: Footnote body.\n');
+});
