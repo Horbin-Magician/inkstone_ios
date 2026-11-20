@@ -15,7 +15,15 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var webDAVPassword = ""
     @Published private(set) var syncSettingsSaveError: String?
     @Published var syncStatus = "尚未同步"
-    @Published var syncing = false { didSet { rescheduleAutomaticSync() } }
+    @Published var syncing = false {
+        didSet {
+            rescheduleAutomaticSync()
+            if !syncing && !loading && pendingSharedInboxImport {
+                pendingSharedInboxImport = false
+                Task { await importSharedInbox() }
+            }
+        }
+    }
     @Published var automaticSync = true { didSet { rescheduleAutomaticSync() } }
     @Published var syncIssue: String?
     @Published var autoSyncPaused = false { didSet { rescheduleAutomaticSync() } }
@@ -45,20 +53,28 @@ final class LibraryStore: ObservableObject {
                 if let note = notes.first(where: { $0.path == path }) { openNote(note) }
                 else { error = "这篇笔记已被移动或删除，请从更新后的列表重新选择。" }
             }
+            if !loading && !syncing && pendingSharedInboxImport {
+                pendingSharedInboxImport = false
+                Task { await importSharedInbox() }
+            }
         }
     }
     @Published var favorites: Set<String> = []
     @Published var selected: Note? { didSet { rescheduleAutomaticSync() } }
-    @Published var requestedNote: Note?
+    @Published var requestedNotePath: String?
     @Published var records: [RecoverySummary] = []
     @Published var external = false
     private(set) var vault: Vault?
-    private var scopedURL: URL?
+    nonisolated(unsafe) private var scopedURL: URL?
     private var root: URL?
     @Published private(set) var imageRevision = 0
     var imageLibraryID: String { root?.standardizedFileURL.absoluteString ?? "unopened" }
     private var started = false
     private var importingShared = false
+    private var pendingSharedInboxImport = false
+    deinit {
+        scopedURL?.stopAccessingSecurityScopedResource()
+    }
     private static var previewRoot: URL? {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "--preview-vault"), args.indices.contains(index + 1) else { return nil }
@@ -166,11 +182,18 @@ final class LibraryStore: ObservableObject {
             throw error
         }
     }
-    func refresh(reportErrors: Bool = true) async {
-        guard let vault, !loading, batchDepth == 0 else { return }
+    func refresh(reportErrors: Bool = true, forceImageReload: Bool = false, allowDuringSync: Bool = false) async {
+        guard let vault, !loading, (!syncing || allowDuringSync), batchDepth == 0 else { return }
         loading = true; defer { loading = false }
-        do { let result = try await vault.scan(); imageRevision &+= 1; apply(result)
-            if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" } }
+        do {
+            let previousNotes = notes, previousFolders = folders
+            let result = try await vault.scan()
+            if forceImageReload || result.notes != previousNotes || result.folders != previousFolders {
+                imageRevision &+= 1
+            }
+            apply(result)
+            if !currentFolder.isEmpty && !folders.contains(currentFolder) { currentFolder = "" }
+        }
         catch {
             if reportErrors { self.error = error.localizedDescription }
             else { syncIssue = error.localizedDescription }
@@ -212,11 +235,12 @@ final class LibraryStore: ObservableObject {
         return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     func updateSyncSettings(_ settings: WebDAVSettings, password: String) {
-        guard settings != webDAV || password != webDAVPassword || syncSettingsSaveError != nil else { return }
+        let unsaved = savedSyncSettings != settings || savedSyncPassword != password
+        guard settings != webDAV || password != webDAVPassword || unsaved || syncSettingsSaveError != nil else { return }
         webDAV = settings
         webDAVPassword = password
         rescheduleAutomaticSync()
-        guard vault != nil, !loading else { return }
+        guard vault != nil else { return }
         do { try saveSyncSettings() }
         catch { syncSettingsSaveError = "配置自动保存失败：" + error.localizedDescription }
     }
@@ -270,7 +294,7 @@ final class LibraryStore: ObservableObject {
     }
 
     func sync(testOnly: Bool = false, automatically: Bool = false) async {
-        guard let vault, !loading, !syncing, mutationsInProgress == 0, selected == nil else { return }
+        guard let vault, !loading, !syncing, mutationsInProgress == 0, (testOnly || selected == nil) else { return }
         syncing = true; syncIssue = nil; syncStatus = testOnly ? "正在测试连接…" : "正在同步笔记与附件…"
         defer { syncing = false }
         do {
@@ -281,13 +305,15 @@ final class LibraryStore: ObservableObject {
                 syncStatus = "连接成功"
             } else {
                 let report = try await vault.synchronize(settings: webDAV, password: webDAVPassword)
+                var uniqueConflicts: [String] = []
+                for path in report.conflicts where !uniqueConflicts.contains(path) { uniqueConflicts.append(path) }
                 syncStatus = "同步完成：上传 \(report.uploaded)，下载 \(report.downloaded)，删除 \(report.deleted)"
-                if !report.conflicts.isEmpty { syncStatus += "；保留 \(report.conflicts.count) 处冲突，请核对笔记" }
+                if !uniqueConflicts.isEmpty { syncStatus += "；保留 \(uniqueConflicts.count) 处冲突，请核对笔记" }
                 syncStatus += " · " + Date().formatted(date: .abbreviated, time: .shortened)
                 defaults.set(syncStatus, forKey: syncKey + ".status")
                 autoSyncSchedule.completed(success: true, changed: report.changed)
                 pendingSync = false; lastSync = Date()
-                syncConflicts = report.conflicts
+                syncConflicts = uniqueConflicts
                 defaults.set(syncConflicts, forKey: syncKey + ".conflicts")
                 defaults.set(lastSync, forKey: syncKey + ".lastSuccess")
             }
@@ -297,7 +323,7 @@ final class LibraryStore: ObservableObject {
             syncIssue = error.localizedDescription
             if !automatically { self.error = error.localizedDescription }
         }
-        if !testOnly { await refresh(reportErrors: !automatically) }
+        if !testOnly { await refresh(reportErrors: !automatically, forceImageReload: true, allowDuringSync: true) }
     }
     var syncSummary: String {
         if syncing { return "正在同步…" }
@@ -314,7 +340,12 @@ final class LibraryStore: ObservableObject {
     var browsableNotes: [Note] { notes }
     func openNote(_ note: Note) {
         if loading { pendingOpenPath = note.path; return }
-        if selected == nil { selected = note } else { requestedNote = note }
+        if selected == nil { selected = note } else { requestedNotePath = note.path }
+    }
+    func selectCurrent(_ note: Note) {
+        if selected?.path != note.path || selected != note {
+            selected = note
+        }
     }
     func beginNote() {
         guard !loading, !syncing else { return }
@@ -325,12 +356,15 @@ final class LibraryStore: ObservableObject {
     }
 
     func createFolder(_ name: String) async {
-        guard !syncing, !loading else { error = VaultError.busy.localizedDescription; return }
-        mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         do {
-            try await vault?.createFolder(path: currentFolder.isEmpty ? name : currentFolder + "/" + name)
-            await refresh()
+            try await createFolder(at: currentFolder.isEmpty ? name : currentFolder + "/" + name)
         } catch { self.error = error.localizedDescription }
+    }
+    func createFolder(at path: String) async throws {
+        guard !syncing, !loading, let vault else { throw VaultError.busy }
+        mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
+        try await vault.createFolder(path: path)
+        await refresh()
     }
     /// Keep sync paused and refresh once, including after a partially successful batch.
     func batchChanges(_ operation: () async throws -> Void) async rethrows {
@@ -345,9 +379,17 @@ final class LibraryStore: ObservableObject {
         batchDepth -= 1
         if batchDepth == 0 { await refresh() }
     }
-    func move(_ path: String, to destination: String) async {
-        guard selected == nil else { error = VaultError.editorOpen.localizedDescription; return }
-        guard !syncing, !loading else { error = VaultError.busy.localizedDescription; return }
+    func move(_ path: String, to destination: String, reportGlobalError: Bool = true) async -> String? {
+        guard selected == nil else {
+            let message = VaultError.editorOpen.localizedDescription
+            if reportGlobalError { error = message }
+            return message
+        }
+        guard !syncing, !loading else {
+            let message = VaultError.busy.localizedDescription
+            if reportGlobalError { error = message }
+            return message
+        }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         do {
             try await vault?.move(path: path, to: destination)
@@ -356,7 +398,12 @@ final class LibraryStore: ObservableObject {
             })
             defaults.set(Array(favorites), forKey: favoriteKey)
             await refresh()
-        } catch { self.error = error.localizedDescription }
+            return nil
+        } catch {
+            let message = error.localizedDescription
+            if reportGlobalError { self.error = message }
+            return message
+        }
     }
     func deleteNote(_ note: Note) async throws {
         guard !syncing, !loading, let vault else { throw VaultError.busy }
@@ -394,38 +441,73 @@ final class LibraryStore: ObservableObject {
     }
     func importFiles(_ urls: [URL]) async {
         guard let vault, !loading, !syncing else { return }
-        loading = true
-        for url in urls {
-            do {
-                _ = try await vault.importFile(url)
-            } catch { self.error = error.localizedDescription }
+        mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
+        var failures: [String] = []
+        do {
+            loading = true
+            defer { loading = false }
+            for url in urls {
+                do { _ = try await vault.importFile(url) }
+                catch { failures.append("\(url.lastPathComponent)：\(error.localizedDescription)") }
+            }
         }
-        loading = false
         await refresh()
+        if !failures.isEmpty {
+            self.error = failures.count == 1 ? failures[0] : "有 \(failures.count) 个文件未能导入：\n" + failures.prefix(3).joined(separator: "\n")
+        }
     }
     func importSharedInbox() async {
         #if os(iOS)
-        guard Self.previewRoot == nil, !importingShared, !syncing, !loading, let vault,
-              let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.inkstone.mobile") else { return }
+        guard Self.previewRoot == nil, !importingShared, let vault else { return }
+        if syncing || loading { pendingSharedInboxImport = true; return }
+        guard let root = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: "group.com.inkstone.mobile") else { return }
         importingShared = true; defer { importingShared = false }
         let inbox = root.appendingPathComponent("Inbox")
-        guard FileManager.default.fileExists(atPath: inbox.path) else { return }
+        let files: [URL] = await Task.detached(priority: .utility) {
+            guard FileManager.default.fileExists(atPath: inbox.path) else { return [] }
+            return (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: [.fileSizeKey]))?
+                .filter { $0.pathExtension == "json" && UUID(uuidString: $0.deletingPathExtension().lastPathComponent) != nil } ?? []
+        }.value
+        guard !files.isEmpty else { return }
         mutationsInProgress += 1; defer { mutationsInProgress -= 1 }
         var imported = false
-        do {
-            for file in try FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil) where file.pathExtension == "json" {
-                guard UUID(uuidString: file.deletingPathExtension().lastPathComponent) != nil else { continue }
-                let value = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: file))
-                guard let text = value["text"] else { continue }
+        var failures: [String] = []
+        for file in files {
+            do {
+                let text: String? = try await Task.detached(priority: .utility) {
+                    let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    guard size <= 16 * 1024 * 1024 else { throw VaultError.tooLarge }
+                    let data = try Data(contentsOf: file)
+                    guard data.count <= 16 * 1024 * 1024 else { throw VaultError.tooLarge }
+                    return try JSONDecoder().decode([String: String].self, from: data)["text"]
+                }.value
+                guard let text else {
+                    try? FileManager.default.removeItem(at: file)
+                    continue
+                }
                 let path = "收件箱/分享-" + file.deletingPathExtension().lastPathComponent + ".md"
                 do { _ = try await vault.create(path: path, text: text); imported = true }
                 catch VaultError.exists {
-                    let saved = try await vault.scan().notes.first { $0.path == path }
-                    guard saved?.text == text else { throw VaultError.conflict }
+                    let existing = notes.first { $0.path == path }
+                    if existing?.text != text {
+                        let scanned = try await vault.scan().notes.first { $0.path == path }
+                        guard scanned?.text == text else { throw VaultError.conflict }
+                    }
                 }
-                try FileManager.default.removeItem(at: file)
+                try? FileManager.default.removeItem(at: file)
+            } catch {
+                // Quarantine malformed JSON files so one corrupt item never blocks subsequent shares.
+                if error is DecodingError {
+                    let quarantine = inbox.appendingPathComponent("Failed")
+                    try? FileManager.default.createDirectory(at: quarantine, withIntermediateDirectories: true)
+                    try? FileManager.default.moveItem(at: file, to: quarantine.appendingPathComponent(file.lastPathComponent))
+                }
+                failures.append(error.localizedDescription)
             }
-        } catch { self.error = "分享收件箱尚未导入，内容仍已保留：" + error.localizedDescription }
+        }
+        if !failures.isEmpty {
+            self.error = "部分分享内容尚未导入：" + failures[0]
+        }
         if imported { await refresh() }
         #endif
     }

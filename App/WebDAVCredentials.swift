@@ -5,7 +5,8 @@ enum WebDAVCredentials {
     private static func query(account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "InkstoneMobile.WebDAV",
-         kSecAttrAccount as String: account]
+         kSecAttrAccount as String: account,
+         kSecAttrSynchronizable as String: kCFBooleanFalse as Any]
     }
     static func read(_ account: String) throws -> String {
         var query = self.query(account: account)
@@ -14,8 +15,11 @@ enum WebDAVCredentials {
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return "" }
-        guard status == errSecSuccess, let data = item as? Data, let password = String(data: data, encoding: .utf8) else {
+        guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status))
+        }
+        guard let data = item as? Data, let password = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
         }
         return password
     }
@@ -25,11 +29,13 @@ enum WebDAVCredentials {
             try delete(account)
             return
         }
-        let attributes: [String: Any] = [kSecValueData as String: Data(password.utf8)]
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(password.utf8),
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
         var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if status == errSecItemNotFound {
-            var item = query.merging(attributes) { _, new in new }
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let item = query.merging(attributes) { _, new in new }
             status = SecItemAdd(item as CFDictionary, nil)
         }
         guard status == errSecSuccess else { throw NSError(domain: NSOSStatusErrorDomain, code: Int(status)) }

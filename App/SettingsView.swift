@@ -24,6 +24,21 @@ struct SettingsView: View {
         let webDAV: WebDAVSettings
         let password: String
     }
+    private static func originKey(of rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let address = trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard let parts = URLComponents(string: address),
+              let scheme = parts.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = parts.host?.lowercased(), !host.isEmpty else { return nil }
+        return "\(scheme)://\(host):\(parts.port ?? (scheme == "https" ? 443 : 80))"
+    }
+    private var appVersionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        let build = info?["CFBundleVersion"] as? String
+        return build.map { "Inkstone Mobile  ·  \(short) (\($0))" } ?? "Inkstone Mobile  ·  \(short)"
+    }
     private func loadDraftFromStore() {
         draftWebDAV = store.webDAV
         draftPassword = store.webDAVPassword
@@ -31,6 +46,13 @@ struct SettingsView: View {
     }
     private func commitSyncSettings() {
         guard draftLibraryID == store.imageLibraryID else { return }
+        if let savedOrigin = Self.originKey(of: store.webDAV.url),
+           let draftOrigin = Self.originKey(of: draftWebDAV.url),
+           savedOrigin != draftOrigin,
+           draftPassword == store.webDAVPassword, !draftPassword.isEmpty {
+            // Never automatically carry over a saved password to a different host/origin.
+            draftPassword = ""
+        }
         store.updateSyncSettings(draftWebDAV, password: draftPassword)
     }
     var body: some View {
@@ -85,6 +107,7 @@ struct SettingsView: View {
                 Text(store.syncSummary)
                 if let date = store.lastSync { LabeledContent("上次成功", value: date.formatted(date: .abbreviated, time: .shortened)) }
                 Button("立即同步") { commitSyncSettings(); Task { await store.sync() } }
+                    .disabled(store.syncing || store.loading || store.selected != nil)
                 HStack(spacing: 6) {
                     if store.syncing { ProgressView().controlSize(.small).tint(.secondary) }
                     Text(store.syncStatus).font(.footnote).foregroundStyle(.secondary)
@@ -98,15 +121,17 @@ struct SettingsView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("同步状态") } footer: {
-                Text("开启后，回到前台和本地修改后自动同步，空闲时每 2 分钟检查一次。打开笔记或设置期间暂缓，关闭后补同步；退到后台不再发起同步。失败会延迟重试，冲突保留副本。")
-            }.disabled(store.syncing || store.loading)
+                Text("开启后，回到前台和本地修改后自动同步，空闲时按 2 至 10 分钟逐步降频检查。打开笔记或设置期间暂缓，关闭后补同步；退到后台不再发起同步。失败会延迟重试，冲突保留副本。")
+            }
             Section("编辑") {
                 Text("新笔记和已有笔记均在停止输入后自动保存到 Markdown 文件，返回或切换笔记时立即保存。输入法组词期间暂缓保存；外部文件冲突时请核对或另存副本。").font(.caption)
             }
             Section("阅读") {
                 Slider(value: $readingSize, in: 14...28, step: 1) { Text("字体大小") }
+                    .accessibilityValue("\(Int(readingSize)) pt")
                 LabeledContent("字体大小", value: "\(Int(readingSize)) pt")
                 Slider(value: $readingSpacing, in: 0...16, step: 1) { Text("行距") }
+                    .accessibilityValue("\(Int(readingSpacing)) pt")
                 LabeledContent("附加行距", value: "\(Int(readingSpacing)) pt")
             }
             Section("备份与保留") {
@@ -122,6 +147,7 @@ struct SettingsView: View {
                     Text("30 天").tag(30); Text("90 天").tag(90); Text("365 天").tag(365)
                 }
                 Button("清理过期历史与已删除记录", role: .destructive) { prune = true }
+                    .disabled(store.syncing || store.loading)
                 Text("清理仅在确认后执行。整库导出包含 Markdown 和附件，不含历史和密码；当前支持总计 128 MB 以内的文件。").font(.caption)
             }
             Section {
@@ -132,7 +158,7 @@ struct SettingsView: View {
             if !store.warnings.isEmpty {
                 Section("读取问题") { ForEach(store.warnings, id: \.self) { Text($0).font(.footnote) } }
             }
-            Section { Text("Inkstone Mobile  ·  0.1.0").font(.footnote).foregroundStyle(.secondary) }
+            Section { Text(appVersionLabel).font(.footnote).foregroundStyle(.secondary) }
         }.navigationTitle("设置")
         .fileExporter(isPresented: $exporting, document: backup, contentType: .zip, defaultFilename: "墨砚备份.zip") { result in
             backup = nil
@@ -180,8 +206,8 @@ struct RecoveryView: View {
     @State private var preview: RecoveryRecord?
     @State private var restored = false
     @State private var restoredNote: Note?
-    @State private var openRestored = false
     @State private var working = false
+    @State private var localError: String?
     @State private var kind = RecoveryKind.history
     var body: some View {
         NavigationStack {
@@ -195,7 +221,7 @@ struct RecoveryView: View {
                 ForEach(store.records.filter { kind == .history ? $0.kind.isHistory : $0.kind == kind }) { record in
                     Button { Task {
                         do { preview = try await store.vault?.recoveryRecord(record) }
-                        catch { store.error = error.localizedDescription }
+                        catch { localError = error.localizedDescription }
                     } } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(record.path).font(.headline).foregroundStyle(.primary)
@@ -207,6 +233,9 @@ struct RecoveryView: View {
             }.navigationTitle("文件恢复")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
                 .task { await store.loadRecovery(path: path) }
+                .alert("读取失败", isPresented: Binding(get: { localError != nil }, set: { if !$0 { localError = nil } })) {
+                    Button("好") { localError = nil }
+                } message: { Text(localError ?? "") }
                 .sheet(item: $preview) { record in
                     NavigationStack {
                         ScrollView { Text(record.text).font(.system(.body, design: .monospaced)).textSelection(.enabled).padding().frame(maxWidth: .infinity, alignment: .leading) }
@@ -226,12 +255,14 @@ struct RecoveryView: View {
                     }.interactiveDismissDisabled(working)
                 }
                 .alert("已恢复为副本", isPresented: $restored) {
-                    Button("打开恢复结果") { openRestored = true }
+                    Button("打开恢复结果") {
+                        if let note = restoredNote {
+                            dismiss()
+                            store.openNote(note)
+                        }
+                    }
                     Button("完成", role: .cancel) {}
                 } message: { Text("原文件未更改。") }
-                .sheet(isPresented: $openRestored) {
-                    if let note = restoredNote { EditorView(note: note).environmentObject(store) }
-                }
         }
     }
 }
@@ -239,7 +270,10 @@ struct RecoveryView: View {
 struct SyncStatusView: View {
     @EnvironmentObject var store: LibraryStore
     @Environment(\.dismiss) private var dismiss
-    @State private var conflictNote: Note?
+    private var uniqueConflicts: [String] {
+        var seen: Set<String> = []
+        return store.syncConflicts.filter { seen.insert($0).inserted }
+    }
     var body: some View {
         NavigationStack {
             Form {
@@ -257,21 +291,28 @@ struct SyncStatusView: View {
                     Button(store.syncIssue == nil ? "立即同步" : "重试同步") { Task { await store.sync() } }
                         .disabled(store.syncing || store.loading || store.selected != nil || store.webDAV.url.isEmpty)
                 }
-                if !store.syncConflicts.isEmpty {
+                if !uniqueConflicts.isEmpty {
                     Section("冲突副本 · 请核对") {
-                        ForEach(store.syncConflicts, id: \.self) { path in
+                        ForEach(uniqueConflicts, id: \.self) { path in
                             VStack(alignment: .leading) {
                                 Text(path).font(.headline)
-                                ForEach(store.notes.filter { $0.path == path || $0.path.hasPrefix((path as NSString).deletingPathExtension + " (云端冲突 ") }) { note in
-                                    Button(note.path == path ? "核对本机版本" : "核对云端冲突副本") { conflictNote = note }
-                                        .disabled(store.loading)
+                                let parent = (path as NSString).deletingLastPathComponent
+                                let stem = (path as NSString).deletingPathExtension
+                                ForEach(store.notes.filter {
+                                    $0.path == path || ($0.folder == parent && ($0.path.hasPrefix(stem + " (云端冲突 ") || $0.path.contains(" (云端冲突 ")))
+                                }) { note in
+                                    Button(note.path == path ? "核对本机版本" : "核对云端冲突副本：\(note.title)") {
+                                        dismiss()
+                                        store.openNote(note)
+                                    }
+                                    .disabled(store.loading)
                                 }
                             }
                         }
                         Text("分别核对版本，保存需要的内容。附件冲突可在文件提供商或桌面端检查。")
                     }
                 }
-            }.sheet(item: $conflictNote) { note in EditorView(note: note).environmentObject(store) }
+            }
             .navigationTitle("保存与同步")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }

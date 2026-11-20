@@ -44,6 +44,7 @@ struct MarkdownReader: View {
                     openLink(target); return .handled
                 }
                 if ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") { return .systemAction }
+                if url.scheme == nil, url.path.isEmpty, url.fragment != nil { return .handled }
                 if url.scheme == nil, !url.path.isEmpty, url.path.lowercased().hasSuffix(".md") {
                     openLink(url.path); return .handled
                 }
@@ -93,17 +94,17 @@ private struct MarkdownBlockView: View {
             HStack(alignment: checked == nil ? .firstTextBaseline : .top, spacing: MarkdownAppearance.metric("task-gap")) {
                 if let checked {
                     Button { toggleTask(block.line) } label: {
+                        let markerSize = min(MarkdownAppearance.metric("task-hit-size") - 6, MarkdownAppearance.metric("task-marker-size") * bodySize / 17)
                         ZStack {
                             Circle().strokeBorder(InkTheme.accent, lineWidth: MarkdownAppearance.metric("task-marker-stroke"))
                             if checked {
                                 Circle().fill(InkTheme.accent)
                                 Image(systemName: "checkmark")
-                                    .font(.system(size: 10 * bodySize / 17, weight: .semibold))
+                                    .font(.system(size: min(14, 10 * bodySize / 17), weight: .semibold))
                                     .foregroundStyle(InkTheme.surface)
                             }
                         }
-                            .frame(width: MarkdownAppearance.metric("task-marker-size") * bodySize / 17,
-                                   height: MarkdownAppearance.metric("task-marker-size") * bodySize / 17)
+                            .frame(width: markerSize, height: markerSize)
                             .frame(width: MarkdownAppearance.metric("task-hit-size"), height: MarkdownAppearance.metric("task-hit-size"))
                             .contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundStyle(InkTheme.accent)
@@ -133,8 +134,9 @@ private struct MarkdownBlockView: View {
                                     fontSize: MarkdownAppearance.metric("code-size") * bodySize / 17)
             }.padding(MarkdownAppearance.metric("code-padding")).background(InkTheme.background, in: RoundedRectangle(cornerRadius: MarkdownAppearance.metric("code-radius")))
         case .table:
+            let maxColumns = block.children.map { $0.children.count }.max() ?? 0
             ScrollView(.horizontal) {
-                MarkdownTableLayout(columnCount: block.children.map { $0.children.count }.max() ?? 0,
+                MarkdownTableLayout(columnCount: maxColumns,
                                     fontScale: bodySize / 17) {
                     ForEach(Array(block.children.enumerated()), id: \.element.id) { index, row in
                         ForEach(row.children) { cell in
@@ -149,7 +151,7 @@ private struct MarkdownBlockView: View {
                                 .overlay { Rectangle().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5) }
                         }
                         // Keep column positions stable for incomplete rows.
-                        ForEach(row.children.count..<(block.children.map { $0.children.count }.max() ?? 0), id: \.self) { _ in
+                        ForEach(row.children.count..<maxColumns, id: \.self) { _ in
                             Color.clear
                         }
                     }
@@ -180,16 +182,24 @@ private struct MarkdownTableLayout: Layout {
     let columnCount: Int
     let fontScale: CGFloat
 
-    private struct Metrics {
-        var widths: [CGFloat]
-        var heights: [CGFloat]
+    struct Cache {
+        var widths: [CGFloat] = []
+        var heights: [CGFloat] = []
         var size: CGSize {
             CGSize(width: widths.reduce(0, +), height: heights.reduce(0, +))
         }
     }
 
-    private func metrics(for subviews: Subviews) -> Metrics {
-        guard columnCount > 0, !subviews.isEmpty else { return Metrics(widths: [], heights: []) }
+    func makeCache(subviews: Subviews) -> Cache {
+        computeCache(for: subviews)
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache = computeCache(for: subviews)
+    }
+
+    private func computeCache(for subviews: Subviews) -> Cache {
+        guard columnCount > 0, !subviews.isEmpty else { return Cache() }
         let minimumWidth = 110 * fontScale
         let maximumWidth = 300 * fontScale
         var widths = Array(repeating: minimumWidth, count: columnCount)
@@ -202,27 +212,26 @@ private struct MarkdownTableLayout: Layout {
             let proposal = ProposedViewSize(width: widths[index % columnCount], height: nil)
             heights[index / columnCount] = max(heights[index / columnCount], cell.sizeThatFits(proposal).height)
         }
-        return Metrics(widths: widths, heights: heights)
+        return Cache(widths: widths, heights: heights)
     }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        metrics(for: subviews).size
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        cache.size
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let metrics = metrics(for: subviews)
-        guard !metrics.widths.isEmpty else { return }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        guard !cache.widths.isEmpty else { return }
         var x = bounds.minX
         var y = bounds.minY
         for (index, cell) in subviews.enumerated() {
             let column = index % columnCount
             let row = index / columnCount
             cell.place(at: CGPoint(x: x, y: y), anchor: .topLeading,
-                       proposal: ProposedViewSize(width: metrics.widths[column], height: metrics.heights[row]))
-            x += metrics.widths[column]
+                       proposal: ProposedViewSize(width: cache.widths[column], height: cache.heights[row]))
+            x += cache.widths[column]
             if column == columnCount - 1 {
                 x = bounds.minX
-                y += metrics.heights[row]
+                y += cache.heights[row]
             }
         }
     }
@@ -272,7 +281,10 @@ private struct MarkdownInlineView: View {
             case .emphasis(let children): part = applying(.emphasized, to: attributed(children))
             case .strong(let children): part = applying(.stronglyEmphasized, to: attributed(children))
             case .strike(let children): part = attributed(children); part.strikethroughStyle = .single
-            case .link(let destination, let children): part = attributed(children); part.link = URL(string: destination)
+            case .link(let destination, let children):
+                part = attributed(children)
+                part.link = URL(string: destination)
+                    ?? destination.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:))
             case .wiki(let target, let label):
                 part = AttributedString(label)
                 var url = URLComponents(); url.scheme = "inkstone"; url.host = "note"
@@ -297,8 +309,8 @@ private struct MarkdownImage: View {
     var body: some View {
         Group {
             if let thumbnail {
-                Image(decorative: thumbnail, scale: displayScale).resizable().scaledToFit()
-                    .accessibilityLabel(alt.isEmpty ? "图片" : alt)
+                Image(thumbnail, scale: displayScale, label: Text(alt.isEmpty ? "图片" : alt))
+                    .resizable().scaledToFit()
             } else { placeholder }
         }.frame(maxWidth: ObsidianImageReference(source: source)?.width.map(CGFloat.init) ?? MarkdownAppearance.metric("image-width"))
         .frame(maxHeight: ObsidianImageReference(source: source)?.height.map(CGFloat.init))
@@ -432,17 +444,18 @@ private struct MarkdownFragmentWebView: RichEditorRepresentable {
     #if os(iOS)
     func makeUIView(context: Context) -> WKWebView { makeWebView(context: context) }
     func updateUIView(_ view: WKWebView, context: Context) { update(view, context: context) }
-    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) { view.configuration.userContentController.removeScriptMessageHandler(forName: "renderHeight") }
+    static func dismantleUIView(_ view: WKWebView, coordinator: Coordinator) { coordinator.dismantle(view) }
     #else
     func makeNSView(context: Context) -> WKWebView { makeWebView(context: context) }
     func updateNSView(_ view: WKWebView, context: Context) { update(view, context: context) }
-    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) { view.configuration.userContentController.removeScriptMessageHandler(forName: "renderHeight") }
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) { coordinator.dismantle(view) }
     #endif
     @MainActor final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var parent: MarkdownFragmentWebView
         var ready = false
         var previous: Data?
         var revision = 0
+        var renderTask: Task<Void, Never>?
         init(_ parent: MarkdownFragmentWebView) { self.parent = parent }
         func render(_ view: WKWebView) {
             guard ready else { return }
@@ -450,24 +463,49 @@ private struct MarkdownFragmentWebView: RichEditorRepresentable {
                                            "language": parent.language, "fontSize": parent.fontSize, "dark": parent.dark]
             guard let data = try? JSONSerialization.data(withJSONObject: payload, options: .sortedKeys), data != previous else { return }
             previous = data; revision += 1; payload["revision"] = revision
-            Task { @MainActor [weak view] in
+            renderTask?.cancel()
+            renderTask = Task { @MainActor [weak view] in
                 _ = try? await view?.callAsyncJavaScript("await window.renderFragment(payload)", arguments: ["payload": payload], in: nil, contentWorld: .page)
             }
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { ready = true; render(webView) }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            ready = false
+            previous = nil
+            renderTask?.cancel()
+            if let url = RichEditorResources.readerURL {
+                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            }
+        }
+        func dismantle(_ view: WKWebView) {
+            renderTask?.cancel()
+            renderTask = nil
+            view.stopLoading()
+            view.navigationDelegate = nil
+            view.configuration.userContentController.removeScriptMessageHandler(forName: "renderHeight")
+        }
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard let body = message.body as? [String: Any], let version = body["revision"] as? Int, version == revision else { return }
-            if let href = body["href"] as? String, let url = URL(string: href) { parent.openLink(url); return }
+            guard message.frameInfo.isMainFrame,
+                  let body = message.body as? [String: Any],
+                  let version = body["revision"] as? Int, version == revision else { return }
+            if let href = body["href"] as? String {
+                if let url = URL(string: href) ?? href.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap(URL.init(string:)) {
+                    parent.openLink(url)
+                }
+                return
+            }
             guard let value = body["height"] as? Double, value.isFinite, value > 0 else { return }
             let height = CGFloat(min(100_000, max(24, value)))
             if abs(parent.height - height) > 0.5 { parent.height = height }
         }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if action.navigationType == .linkActivated, let url = action.request.url {
-                if url.scheme == "file", let base = RichEditorResources.readerURL?.deletingLastPathComponent().path,
-                   url.path.hasPrefix(base + "/") {
-                    let relative = String(url.path.dropFirst(base.count + 1))
-                    if let link = URL(string: relative) { parent.openLink(link) }
+                if url.scheme == "file", let base = RichEditorResources.readerURL?.deletingLastPathComponent().standardizedFileURL.path,
+                   url.standardizedFileURL.path.hasPrefix(base + "/") {
+                    let relative = String(url.standardizedFileURL.path.dropFirst(base.count + 1))
+                    if let link = URL(string: relative) ?? relative.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed).flatMap(URL.init(string:)) {
+                        parent.openLink(link)
+                    }
                 } else { parent.openLink(url) }
                 decisionHandler(.cancel)
             } else { decisionHandler(action.request.url == RichEditorResources.readerURL ? .allow : .cancel) }

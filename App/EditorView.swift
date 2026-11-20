@@ -24,6 +24,8 @@ struct EditorView: View {
     @State private var targetFolder = ""
     @State private var chooseFolder = false
     @State private var scrollLine: Int?
+    @State private var scrollTask: Task<Void, Never>?
+    @State private var noteSessionToken = UUID()
     @State private var searchQuery = ""
     private var composing: Bool {
         get { richEditor.composing }
@@ -225,7 +227,7 @@ struct EditorView: View {
             }
             .disabled(attachmentWorking)
             .interactiveDismissDisabled(needsSave || saving || attachmentWorking || (!reading && !sourceEditing))
-            .task(id: current.path) {
+            .task(id: noteSessionToken) {
                 isNew = !store.notes.contains { $0.path == current.path }
                 filename = isNew ? "" : current.title
                 targetFolder = current.folder
@@ -236,8 +238,11 @@ struct EditorView: View {
             }
             .sheet(isPresented: $chooseFolder) { NoteFolderPicker(selection: $targetFolder).environmentObject(store) }
             .sheet(isPresented: $syncDetails) { SyncStatusView().environmentObject(store) }
-            .onChange(of: store.requestedNote) { _, note in
-                if let note { store.requestedNote = nil; navigate(to: note) }
+            .onChange(of: store.requestedNotePath) { _, path in
+                if let path {
+                    store.requestedNotePath = nil
+                    navigate(toPath: path)
+                }
             }
             .onChange(of: text) { _, _ in scheduleSave() }
             .onReceive(richEditor.editEvents) { _ in scheduleSave() }
@@ -255,8 +260,14 @@ struct EditorView: View {
             }
             .onChange(of: editorFocused) { _, value in if !value { flushSave() } }
             .onChange(of: composing) { _, marked in if !marked { scheduleSave() } }
-            .onChange(of: scenePhase) { _, phase in if phase != .active { flushSave() } }
-            .onDisappear { flushSave() }
+            .onChange(of: scenePhase) { oldPhase, phase in
+                if oldPhase == .active && phase != .active { flushSave(background: true) }
+            }
+            .onDisappear {
+                scrollTask?.cancel(); scrollTask = nil
+                if let previewURL { try? FileManager.default.removeItem(at: previewURL); self.previewURL = nil }
+                flushSave()
+            }
             .task(id: ParseRequest(revision: textRevision, needed: reading || info)) {
                 guard reading || info, parsedDocument == nil else { return }
                 let source = text
@@ -399,7 +410,12 @@ struct EditorView: View {
                         ForEach(headings) { heading in
                             Button(String(repeating: "  ", count: heading.level - 1) + heading.title) {
                                 reading = true; info = false
-                                Task { try? await Task.sleep(for: .milliseconds(300)); scrollLine = heading.line }
+                                scrollLine = nil
+                                scrollTask?.cancel()
+                                scrollTask = Task {
+                                    do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+                                    scrollLine = heading.line
+                                }
                             }
                         }
                     }
@@ -433,21 +449,30 @@ struct EditorView: View {
         Task {
             do {
                 guard let data = try await store.vault?.attachment(source, from: current.path) else { return }
-                let name = URLComponents(string: source)?.path ?? "attachment"
-                let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + (name as NSString).lastPathComponent)
-                try data.write(to: url, options: .atomic)
+                let rawName = URLComponents(string: source)?.path ?? (source.removingPercentEncoding ?? source)
+                let lastComponent = (rawName as NSString).lastPathComponent
+                let safeName = lastComponent.isEmpty || lastComponent == "/" ? "attachment" : lastComponent
+                let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "-" + safeName)
+                try await Task.detached(priority: .userInitiated) {
+                    try data.write(to: url, options: .atomic)
+                }.value
                 previewURL = url
             } catch { issue = "附件无法打开：" + error.localizedDescription }
         }
     }
     private func locateSearch() {
         guard let term = searchQuery.split(whereSeparator: \.isWhitespace).first,
-              let range = text.range(of: String(term), options: [.caseInsensitive, .diacriticInsensitive]),
+              let range = text.localizedStandardRange(of: String(term)),
               let document = parsedDocument else { return }
         let line = text[..<range.lowerBound].filter { $0 == "\n" }.count
         let target = document.blocks.last(where: { $0.line <= line })?.line
         scrollLine = nil
-        Task { await Task.yield(); scrollLine = target }
+        scrollTask?.cancel()
+        scrollTask = Task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            scrollLine = target
+        }
     }
     private func applyTextChange(_ newValue: String) {
         guard text != newValue else { return }
@@ -459,11 +484,13 @@ struct EditorView: View {
         textDirty = textRevision != savedTextRevision && text != current.text
     }
     private func switchNote(_ note: Note) {
+        scrollTask?.cancel(); scrollTask = nil
         richEditor.saveTask?.cancel()
         richEditor.saveTask = nil
         richEditor.resetSession()
         isNew = !store.notes.contains { $0.path == note.path }
         current = note
+        store.selectCurrent(note)
         text = note.text
         textRevision &+= 1
         savedTextRevision = textRevision
@@ -472,9 +499,24 @@ struct EditorView: View {
         document = nil
         reading = !note.text.isEmpty
         editorFocused = !reading
-        status = "已保存到文件"
+        status = isNew ? "输入后自动保存" : "已保存到文件"
+        noteSessionToken = UUID()
     }
-    private func navigate(to note: Note) { Task { await transition { guard await saveIfNeeded() else { return false }; switchNote(note); return true } } }
+    private func navigate(to note: Note) {
+        guard note.path != current.path else { return }
+        navigate(toPath: note.path, fallback: note)
+    }
+    private func navigate(toPath path: String, fallback: Note? = nil) {
+        guard path != current.path else { return }
+        Task {
+            await transition {
+                guard await saveIfNeeded() else { return false }
+                guard let latest = store.notes.first(where: { $0.path == path }) ?? fallback else { return false }
+                switchNote(latest)
+                return true
+            }
+        }
+    }
     private func openLink(_ target: String) {
         switch store.noteIndex.resolve(target, from: current.path) {
         case .found(let path): if let note = store.notes.first(where: { $0.path == path }) { navigate(to: note) }
@@ -529,47 +571,86 @@ struct EditorView: View {
         return true
     }
     private func saveIfNeeded() async -> Bool {
+        if let active = richEditor.activeSaveTask {
+            _ = await active.value
+        }
         guard await refreshRichSnapshot() else { return false }
         guard !saving, !composing else { return false }
         guard needsSave else { return richEditor.session.canNavigate(textIsDirty: false) }
         guard await save(snapshotReady: true) else { return false }
         return richEditor.session.canNavigate(textIsDirty: needsSave)
     }
-    private func flushSave() {
+    private func flushSave(background: Bool = false) {
         richEditor.saveTask?.cancel()
         richEditor.saveTask = nil
         guard !autoSaveBlocked else { return }
+        #if os(iOS)
+        if background {
+            var taskID = UIBackgroundTaskIdentifier.invalid
+            taskID = UIApplication.shared.beginBackgroundTask(withName: "InkstoneSave") {
+                if taskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(taskID)
+                    taskID = .invalid
+                }
+            }
+            Task {
+                _ = await saveIfNeeded()
+                if taskID != .invalid {
+                    UIApplication.shared.endBackgroundTask(taskID)
+                    taskID = .invalid
+                }
+            }
+            return
+        }
+        #endif
         Task { _ = await saveIfNeeded() }
     }
     private func save(snapshotReady: Bool = false) async -> Bool {
+        if let active = richEditor.activeSaveTask {
+            _ = await active.value
+            if !needsSave { return !autoSaveBlocked }
+        }
         if !snapshotReady, !(await refreshRichSnapshot()) { return false }
         guard !saving, !composing, let vault = store.vault else { return false }
-        saving = true; richEditor.saveTask?.cancel(); richEditor.saveTask = nil; defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
-        do {
-            let savingRevision = textRevision
-            let saved: Note
-            if isNew {
-                let path = try Note.draftPath(folder: targetFolder, filename: filename, fallback: current.path)
-                saved = try await vault.create(path: path, text: text)
-                isNew = false
-            } else {
-                saved = try await vault.save(path: current.path, text: text, expected: current.text, historySession: historySession)
+        let saveOperation = Task<Bool, Never> { @MainActor in
+            saving = true; richEditor.saveTask?.cancel(); richEditor.saveTask = nil
+            defer {
+                saving = false
+                richEditor.activeSaveTask = nil
+                if needsSave && !autoSaveBlocked { scheduleSave() }
             }
-            await store.acceptSaved(saved)
-            current = saved; savedTextRevision = savingRevision; updateTextDirty()
-            autoSaveBlocked = false; setStatus("已保存到文件"); return true
-        } catch { issue = error.localizedDescription; autoSaveBlocked = true; setStatus("保存失败 · 修改尚未写入文件"); return false }
+            do {
+                let savingRevision = textRevision
+                let saved: Note
+                if isNew {
+                    let path = try Note.draftPath(folder: targetFolder, filename: filename, fallback: current.path)
+                    saved = try await vault.create(path: path, text: text)
+                    isNew = false
+                } else {
+                    saved = try await vault.save(path: current.path, text: text, expected: current.text, historySession: historySession)
+                }
+                await store.acceptSaved(saved)
+                current = saved; store.selectCurrent(saved)
+                savedTextRevision = savingRevision; updateTextDirty()
+                autoSaveBlocked = false; setStatus(needsSave ? "等待保存…" : "已保存到文件"); return true
+            } catch { issue = error.localizedDescription; autoSaveBlocked = true; setStatus("保存失败 · 修改尚未写入文件"); return false }
+        }
+        richEditor.activeSaveTask = saveOperation
+        return await saveOperation.value
     }
     private func saveCopy() async {
+        if let active = richEditor.activeSaveTask { _ = await active.value }
         guard await refreshRichSnapshot() else { return }
         guard !saving, !composing, let vault = store.vault else { return }
         saving = true; richEditor.saveTask?.cancel(); richEditor.saveTask = nil; defer { saving = false; if needsSave && !autoSaveBlocked { scheduleSave() } }
         do {
             let savingRevision = textRevision
-            let path = (current.path as NSString).deletingPathExtension + "-副本-" + UUID().uuidString.prefix(6) + ".md"
+            let basePath = isNew ? (try Note.draftPath(folder: targetFolder, filename: filename, fallback: current.path)) : current.path
+            let path = (basePath as NSString).deletingPathExtension + "-副本-" + UUID().uuidString.prefix(6) + ".md"
             let copy = try await vault.create(path: path, text: text)
             await store.acceptSaved(copy); historySession = UUID()
-            current = copy; savedTextRevision = savingRevision; updateTextDirty()
+            current = copy; store.selectCurrent(copy)
+            savedTextRevision = savingRevision; updateTextDirty()
             isNew = false; autoSaveBlocked = false; setStatus("已保存到文件")
         } catch { issue = error.localizedDescription }
     }
@@ -609,21 +690,60 @@ private struct MarkdownTextEditor: UIViewRepresentable {
         view.keyboardDismissMode = .interactive
         view.text = text
         context.coordinator.view = view
-        let bar = UIToolbar()
-        bar.sizeToFit()
-        let actions: [(String, String)] = [("标题", "## "), ("列表", "- "), ("待办", "- [ ] "), ("链接", "[["), ("缩进", "    ")]
-        var items = actions.map { label, insertion in
-            UIBarButtonItem(title: label, primaryAction: UIAction { [weak view] _ in view?.insertText(insertion) })
+        let accessory = UIInputView(frame: CGRect(x: 0, y: 0, width: 320, height: 44), inputViewStyle: .keyboard)
+        accessory.allowsSelfSizing = false
+        let scroll = UIScrollView()
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        scroll.contentInset = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 6
+        func makeButton(title: String, action: UIAction? = nil) -> UIButton {
+            let button = UIButton(type: .system)
+            var config = UIButton.Configuration.plain()
+            var attr = AttributedString(title)
+            attr.font = .systemFont(ofSize: 14, weight: .medium)
+            config.attributedTitle = attr
+            config.baseForegroundColor = .label
+            config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+            button.configuration = config
+            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+            if let action { button.addAction(action, for: .touchUpInside) }
+            return button
         }
-        let completions = UIBarButtonItem(title: "补全", menu: UIMenu(children: []))
+        let actions: [(String, String)] = [("标题", "## "), ("列表", "- "), ("待办", "- [ ] "), ("链接", "[["), ("缩进", "    ")]
+        for (label, insertion) in actions {
+            stack.addArrangedSubview(makeButton(title: label, action: UIAction { [weak view] _ in view?.insertText(insertion) }))
+        }
+        let completions = makeButton(title: "补全")
+        completions.showsMenuAsPrimaryAction = true
         completions.isEnabled = false
-        context.coordinator.completions = completions
-        items.append(completions)
-        items.append(UIBarButtonItem(title: "撤销", primaryAction: UIAction { [weak view] _ in view?.undoManager?.undo() }))
-        items.append(UIBarButtonItem(systemItem: .flexibleSpace))
-        items.append(UIBarButtonItem(title: "完成", primaryAction: UIAction { [weak view] _ in view?.resignFirstResponder() }))
-        bar.items = items
-        view.inputAccessoryView = bar
+        context.coordinator.completionsButton = completions
+        stack.addArrangedSubview(completions)
+        stack.addArrangedSubview(makeButton(title: "撤销", action: UIAction { [weak view] _ in view?.undoManager?.undo() }))
+        let doneButton = makeButton(title: "完成", action: UIAction { [weak view] _ in view?.resignFirstResponder() })
+        doneButton.translatesAutoresizingMaskIntoConstraints = false
+        scroll.addSubview(stack)
+        accessory.addSubview(scroll)
+        accessory.addSubview(doneButton)
+        NSLayoutConstraint.activate([
+            doneButton.trailingAnchor.constraint(equalTo: accessory.trailingAnchor, constant: -6),
+            doneButton.centerYAnchor.constraint(equalTo: accessory.centerYAnchor),
+            scroll.topAnchor.constraint(equalTo: accessory.topAnchor),
+            scroll.leadingAnchor.constraint(equalTo: accessory.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: doneButton.leadingAnchor, constant: -4),
+            scroll.bottomAnchor.constraint(equalTo: accessory.bottomAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
+        ])
+        view.inputAccessoryView = accessory
         return view
     }
     func updateUIView(_ view: UITextView, context: Context) {
@@ -634,14 +754,19 @@ private struct MarkdownTextEditor: UIViewRepresentable {
             view.text = text
             view.selectedRange = NSRange(location: min(selection.location, (text as NSString).length), length: 0)
         }
-        (view as? ImagePasteTextView)?.wantsFocus = focused
-        if focused && !view.isFirstResponder && view.window != nil { DispatchQueue.main.async { view.becomeFirstResponder() } }
+        let pasteView = view as? ImagePasteTextView
+        pasteView?.wantsFocus = focused
+        if focused && !view.isFirstResponder && view.window != nil {
+            DispatchQueue.main.async { [weak pasteView] in
+                if pasteView?.wantsFocus == true, pasteView?.window != nil { pasteView?.becomeFirstResponder() }
+            }
+        }
         if !focused && view.isFirstResponder { view.resignFirstResponder() }
     }
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: MarkdownTextEditor
         weak var view: UITextView?
-        var completions: UIBarButtonItem?
+        var completionsButton: UIButton?
         init(_ parent: MarkdownTextEditor) { self.parent = parent }
         func textViewDidBeginEditing(_ textView: UITextView) { parent.focused = true }
         func textViewDidEndEditing(_ textView: UITextView) { parent.focused = false; parent.composing = false }
@@ -651,22 +776,24 @@ private struct MarkdownTextEditor: UIViewRepresentable {
             updateCompletions(textView)
         }
         private func updateCompletions(_ textView: UITextView) {
-            completions?.isEnabled = false
+            completionsButton?.isEnabled = false
             guard textView.markedTextRange == nil else { return }
-            let before = (textView.text as NSString).substring(to: textView.selectedRange.location)
+            let nsText = textView.text as NSString
+            let loc = min(max(0, textView.selectedRange.location), nsText.length)
+            let before = nsText.substring(to: loc)
             guard let opener = before.range(of: "[[", options: .backwards) else { return }
             let query = String(before[opener.upperBound...])
             guard !query.contains("]"), !query.contains("\n") else { return }
             let matches = parent.titles.filter { query.isEmpty || $0.localizedStandardContains(query) }.prefix(12)
             let replacement = NSRange(opener.lowerBound..<before.endIndex, in: before)
-            completions?.menu = UIMenu(children: matches.map { target in
+            completionsButton?.menu = UIMenu(children: matches.map { target in
                 UIAction(title: target) { [weak textView] _ in
                     guard let textView, (textView.text as NSString).length >= NSMaxRange(replacement) else { return }
                     textView.selectedRange = replacement
                     textView.insertText("[[" + target + "]]")
                 }
             })
-            completions?.isEnabled = !matches.isEmpty
+            completionsButton?.isEnabled = !matches.isEmpty
         }
         func textViewDidChangeSelection(_ textView: UITextView) {
             parent.composing = textView.markedTextRange != nil
@@ -674,12 +801,16 @@ private struct MarkdownTextEditor: UIViewRepresentable {
         }
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             guard text == "\n", textView.markedTextRange == nil, range.length == 0 else { return true }
-            let before = (textView.text as NSString).substring(to: range.location)
+            let nsText = textView.text as NSString
+            let safeLocation = min(max(0, range.location), nsText.length)
+            let before = nsText.substring(to: safeLocation)
             let line = before.components(separatedBy: "\n").last ?? ""
             guard let markerRange = line.range(of: #"^\s*(?:[-+*] (?:\[[ xX]\] )?|[0-9]+\. )"#, options: .regularExpression) else { return true }
             var marker = String(line[markerRange])
             if line[markerRange.upperBound...].trimmingCharacters(in: .whitespaces).isEmpty {
-                textView.selectedRange = NSRange(location: range.location - (marker as NSString).length, length: (marker as NSString).length)
+                let markerLength = (marker as NSString).length
+                guard safeLocation >= markerLength else { return true }
+                textView.selectedRange = NSRange(location: safeLocation - markerLength, length: markerLength)
                 textView.insertText("\n")
             } else {
                 marker = marker.replacingOccurrences(of: "[x]", with: "[ ]").replacingOccurrences(of: "[X]", with: "[ ]")
@@ -696,12 +827,21 @@ private final class ImagePasteTextView: UITextView {
     var wantsFocus = false
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil && wantsFocus { DispatchQueue.main.async { [weak self] in self?.becomeFirstResponder() } }
+        if window != nil && wantsFocus {
+            DispatchQueue.main.async { [weak self] in
+                if self?.wantsFocus == true, self?.window != nil { self?.becomeFirstResponder() }
+            }
+        }
     }
     var onImage: ((Data) -> Void)?
     override func paste(_ sender: Any?) {
-        if let image = UIPasteboard.general.image, let data = image.pngData() { onImage?(data) }
-        else { super.paste(sender) }
+        if let image = UIPasteboard.general.image {
+            let handler = onImage
+            Task.detached(priority: .userInitiated) {
+                guard let data = image.pngData() else { return }
+                await MainActor.run { handler?(data) }
+            }
+        } else { super.paste(sender) }
     }
 }
 

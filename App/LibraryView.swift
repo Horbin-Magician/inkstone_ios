@@ -193,7 +193,7 @@ struct LibraryView: View {
                     Button { store.currentFolder = (store.currentFolder as NSString).deletingLastPathComponent } label: {
                         Label("上一级 · " + store.currentFolder, systemImage: "arrow.turn.up.left")
                             .font(.subheadline).lineLimit(1)
-                    }.frame(minHeight: 36)
+                    }.frame(minHeight: 44)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .listRowSeparator(.hidden, edges: .top)
                 }
@@ -204,7 +204,7 @@ struct LibraryView: View {
                             Text((folder as NSString).lastPathComponent).foregroundStyle(.primary)
                             Spacer()
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-                        }.frame(minHeight: 36).contentShape(Rectangle())
+                        }.frame(minHeight: 44).contentShape(Rectangle())
                     }.buttonStyle(.plain)
                     .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
                     .listRowSeparator(store.currentFolder.isEmpty && folder == folders.first ? .hidden : .automatic, edges: .top)
@@ -285,7 +285,7 @@ struct LibraryView: View {
             }
         }
         .onChange(of: showSearch) { _, shown in searchFocused = shown }
-        .refreshable { await store.refresh() }
+        .refreshable { await store.refresh(forceImageReload: true) }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Menu {
@@ -439,15 +439,15 @@ struct FileLocationView: View {
                         HStack {
                             TextField("新文件夹名称", text: $newFolder)
                             Button("创建") { Task {
-                                guard let vault = store.vault else { return }
                                 working = true; defer { working = false }
                                 do {
-                                    guard validName(newFolder) else { throw VaultError.invalidPath }
-                                    let target = folder.isEmpty ? newFolder : folder + "/" + newFolder
-                                    try await vault.createFolder(path: target)
-                                    await store.refresh(); folder = target; newFolder = ""
+                                    let trimmed = newFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    guard validName(trimmed) else { throw VaultError.invalidPath }
+                                    let target = folder.isEmpty ? trimmed : folder + "/" + trimmed
+                                    try await store.createFolder(at: target)
+                                    folder = target; newFolder = ""
                                 } catch { issue = error.localizedDescription }
-                            } }.disabled(newFolder.isEmpty)
+                            } }.disabled(newFolder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working || store.syncing)
                         }
                     }
                 }
@@ -473,23 +473,27 @@ struct FileLocationView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(rename ? "保存" : "移到这里") { Task {
-                        guard validName(name) else { issue = "名称不能包含路径分隔符或以点开头。"; return }
                         working = true; defer { working = false }
-                        let finalName = rename && path.lowercased().hasSuffix(".md") ? name + ".md" : name
-                        let target = folder.isEmpty ? finalName : folder + "/" + finalName
-                        if target == path { dismiss(); return }
-                        store.error = nil
-                        if movePaths.isEmpty { await store.move(path, to: target) }
-                        else {
+                        issue = nil
+                        var moveError: String?
+                        if movePaths.isEmpty {
+                            guard validName(name) else { issue = "名称不能包含路径分隔符或以点开头。"; return }
+                            let finalName = rename && path.lowercased().hasSuffix(".md") ? name + ".md" : name
+                            let target = folder.isEmpty ? finalName : folder + "/" + finalName
+                            if target == path { dismiss(); return }
+                            moveError = await store.move(path, to: target, reportGlobalError: false)
+                        } else {
                             await store.batchChanges {
                                 for source in movePaths {
                                     let destination = (folder.isEmpty ? "" : folder + "/") + (source as NSString).lastPathComponent
-                                    if source != destination { await store.move(source, to: destination) }
-                                    if store.error != nil { break }
+                                    if source != destination {
+                                        moveError = await store.move(source, to: destination, reportGlobalError: false)
+                                        if moveError != nil { break }
+                                    }
                                 }
                             }
                         }
-                        if let error = store.error { issue = error; store.error = nil } else { dismiss() }
+                        if let moveError { issue = moveError } else { dismiss() }
                     } }
                 }
             }.disabled(working).interactiveDismissDisabled(working)
@@ -535,6 +539,7 @@ struct NoteFolderPicker: View {
     @Binding var selection: String
     @State private var folder = ""
     @State private var name = ""
+    @State private var working = false
     @State private var issue: String?
     var body: some View {
         NavigationStack {
@@ -547,13 +552,15 @@ struct NoteFolderPicker: View {
                 HStack {
                     TextField("新文件夹名称", text: $name)
                     Button("创建") { Task {
+                        working = true; defer { working = false }
                         do {
-                            guard !name.contains("/"), !name.contains("\\"), !name.hasPrefix(".") else { throw VaultError.invalidPath }
-                            let path = (folder.isEmpty ? "" : folder + "/") + name
-                            try await store.vault?.createFolder(path: path)
-                            await store.refresh(); folder = path; name = ""
+                            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty, !trimmed.contains("/"), !trimmed.contains("\\"), !trimmed.hasPrefix(".") else { throw VaultError.invalidPath }
+                            let path = (folder.isEmpty ? "" : folder + "/") + trimmed
+                            try await store.createFolder(at: path)
+                            folder = path; name = ""
                         } catch { issue = error.localizedDescription }
-                    } }.disabled(name.isEmpty || store.syncing)
+                    } }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working || store.syncing)
                 }
                 if let issue { Text(issue).foregroundStyle(.red) }
             }.navigationTitle("保存位置")
