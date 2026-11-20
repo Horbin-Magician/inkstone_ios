@@ -64,4 +64,15 @@ extension EditorSessionTests {
         #expect(!session.snapshotComposing)
         #expect(session.canNavigate(textIsDirty: false))
     }
+    @Test func activeTransitionAllowsNavigationOnceClean() {
+        var session = EditorSession()
+        session.transitioning = true
+        #expect(session.canNavigate(textIsDirty: false))
+        #expect(!session.canNavigate(textIsDirty: true))
+        session.changed(version: 1, composing: false)
+        #expect(!session.canNavigate(textIsDirty: false))
+        let accepted = session.acceptSnapshot(version: 1, composing: false)
+        #expect(accepted)
+        #expect(session.canNavigate(textIsDirty: false))
+    }
 }

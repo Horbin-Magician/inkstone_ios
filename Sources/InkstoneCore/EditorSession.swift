@@ -18,7 +18,7 @@ public struct EditorSession: Sendable {
     public var isSaving: Bool { savePhase == .saving }
     public var saveBlocked: Bool { if case .failed = savePhase { return true }; return false }
     public func canNavigate(textIsDirty: Bool) -> Bool {
-        !textIsDirty && !hasPendingSnapshot && !composing && !snapshotComposing && !transitioning && !isSaving && !saveBlocked
+        !textIsDirty && !hasPendingSnapshot && !composing && !snapshotComposing && !isSaving && !saveBlocked
     }
     public mutating func changed(version: Int, composing: Bool) {
         guard version >= editingVersion else { return }
